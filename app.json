@@ -18,10 +18,16 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/app-icon.png",
         "backgroundColor": "#ffffff"
-      }
+      },
+      "package": "com.ereasat.traintrack"
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "29d1d820-6afd-47c0-bde2-72ecf63a5f0c"
+      }
     }
   }
 }

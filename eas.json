@@ -8,19 +8,19 @@
       "developmentClient": true,
       "distribution": "internal",
       "android": {
-        "image": "ubuntu-22.04-jdk-17"
+        "image": "ubuntu-22.04-jdk-17-ndk-r25b"
       }
     },
     "preview": {
       "distribution": "internal",
       "android": {
-        "image": "ubuntu-22.04-jdk-17"
+        "image": "ubuntu-22.04-jdk-17-ndk-r25b"
       }
     },
     "production": {
       "autoIncrement": true,
       "android": {
-        "image": "ubuntu-22.04-jdk-17"
+        "image": "ubuntu-22.04-jdk-17-ndk-r25b"
       }
     }
   },
