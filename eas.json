@@ -1,0 +1,30 @@
+{
+  "cli": {
+    "version": ">= 16.17.4",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "image": "ubuntu-22.04-jdk-17"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "image": "ubuntu-22.04-jdk-17"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "android": {
+        "image": "ubuntu-22.04-jdk-17"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}
