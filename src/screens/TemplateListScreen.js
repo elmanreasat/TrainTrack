@@ -52,6 +52,78 @@ export default function TemplateListScreen({ navigation }) {
     items: [],
     busy: false,
   });
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+
+  const toggleSelect = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const selectAll = () => {
+    setSelectedIds(new Set(templates.map((t) => t.id)));
+  };
+  const selectNone = () => {
+    setSelectedIds(new Set());
+  };
+  const exitSelectMode = () => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  };
+  const exportSelected = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) {
+      Alert.alert("Nothing selected");
+      return;
+    }
+    try {
+      const payload = await exportTemplatesJson(ids);
+      const json = JSON.stringify(payload, null, 2);
+      const uri =
+        FileSystem.cacheDirectory +
+        `traintrack-export-${Date.now()}-selected-${ids.length}.json`;
+      await FileSystem.writeAsStringAsync(uri, json, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: "application/json" });
+      } else {
+        Alert.alert("Exported", `Saved to temporary file: ${uri}`);
+      }
+    } catch (e) {
+      Alert.alert("Export failed", e?.message || "Could not export");
+    }
+  };
+  const deleteSelected = () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) {
+      Alert.alert("Nothing selected");
+      return;
+    }
+    Alert.alert(
+      "Delete Templates",
+      `Delete ${ids.length} template(s)? This cannot be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            for (const id of ids) {
+              try {
+                await deleteTemplate(id);
+              } catch {}
+            }
+            await load();
+            exitSelectMode();
+          },
+        },
+      ]
+    );
+  };
 
   const load = async () => {
     setRefreshing(true);
@@ -130,40 +202,46 @@ export default function TemplateListScreen({ navigation }) {
     }
   };
 
-  const renderItem = ({ item }) => (
-    <TouchableOpacity
-      style={styles.card}
-      activeOpacity={0.85}
-      onPress={() =>
-        navigation.navigate("WeekView", {
-          templateId: item.id,
-          templateName: item.name,
-        })
-      }
-    >
-      <View style={{ flex: 1 }}>
-        <Text style={styles.cardTitle}>{item.name}</Text>
-        <Text style={styles.cardSubtitle}>{item.weeks} weeks</Text>
-      </View>
-      <Ionicons name="chevron-forward" size={20} color="#9a9a9a" />
+  const renderItem = ({ item }) => {
+    const isSelected = selectedIds.has(item.id);
+    return (
       <TouchableOpacity
-        accessibilityLabel="Export template"
-        onPress={() => onExportOne(item.id)}
-        style={styles.iconButton}
-        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        style={styles.card}
+        activeOpacity={0.85}
+        onPress={() => {
+          if (selectMode) toggleSelect(item.id);
+          else
+            navigation.navigate("WeekView", {
+              templateId: item.id,
+              templateName: item.name,
+            });
+        }}
+        onLongPress={() => {
+          if (!selectMode) {
+            setSelectMode(true);
+            setSelectedIds(new Set([item.id]));
+          }
+        }}
       >
-        <Ionicons name="cloud-download-outline" size={22} color="#0a84ff" />
+        {selectMode ? (
+          <View style={{ marginRight: 8 }}>
+            <Ionicons
+              name={isSelected ? "checkbox-outline" : "square-outline"}
+              size={22}
+              color={isSelected ? "#0a84ff" : "#999"}
+            />
+          </View>
+        ) : null}
+        <View style={{ flex: 1 }}>
+          <Text style={styles.cardTitle}>{item.name}</Text>
+          <Text style={styles.cardSubtitle}>{item.weeks} weeks</Text>
+        </View>
+        {!selectMode && (
+          <Ionicons name="chevron-forward" size={20} color="#9a9a9a" />
+        )}
       </TouchableOpacity>
-      <TouchableOpacity
-        accessibilityLabel="Delete template"
-        onPress={() => confirmDelete(item.id)}
-        style={styles.iconButton}
-        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-      >
-        <Ionicons name="trash-outline" size={22} color="#cc0000" />
-      </TouchableOpacity>
-    </TouchableOpacity>
-  );
+    );
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -204,106 +282,138 @@ export default function TemplateListScreen({ navigation }) {
 
       <View style={styles.footer}>
         <View style={styles.rowButtons}>
-          <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={async () => {
-              try {
-                // Export all templates (still useful)
-                const payload = await exportTemplatesJson();
-                const json = JSON.stringify(payload, null, 2);
-                const uri =
-                  FileSystem.cacheDirectory +
-                  `traintrack-export-${Date.now()}.json`;
-                await FileSystem.writeAsStringAsync(uri, json, {
-                  encoding: FileSystem.EncodingType.UTF8,
-                });
-                if (await Sharing.isAvailableAsync()) {
-                  await Sharing.shareAsync(uri, {
-                    mimeType: "application/json",
+          {!selectMode ? (
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={() => setSelectMode(true)}
+            >
+              <Ionicons
+                name="checkmark-done-outline"
+                size={18}
+                color="#0a84ff"
+              />
+              <Text style={styles.secondaryButtonText}>Select</Text>
+            </TouchableOpacity>
+          ) : (
+            <>
+              <TouchableOpacity
+                style={styles.secondaryButton}
+                onPress={selectAll}
+              >
+                <Ionicons name="checkbox-outline" size={18} color="#0a84ff" />
+                <Text style={styles.secondaryButtonText}>All</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.secondaryButton}
+                onPress={selectNone}
+              >
+                <Ionicons name="square-outline" size={18} color="#0a84ff" />
+                <Text style={styles.secondaryButtonText}>None</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.secondaryButton}
+                onPress={exportSelected}
+              >
+                <Ionicons
+                  name="cloud-download-outline"
+                  size={18}
+                  color="#0a84ff"
+                />
+                <Text style={styles.secondaryButtonText}>Export Selected</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.secondaryButton}
+                onPress={deleteSelected}
+              >
+                <Ionicons name="trash-outline" size={18} color="#cc0000" />
+                <Text
+                  style={[styles.secondaryButtonText, { color: "#cc0000" }]}
+                >
+                  Delete Selected
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.secondaryButton}
+                onPress={exitSelectMode}
+              >
+                <Ionicons name="close-outline" size={18} color="#0a84ff" />
+                <Text style={styles.secondaryButtonText}>Cancel</Text>
+              </TouchableOpacity>
+            </>
+          )}
+          {!selectMode && (
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={async () => {
+                try {
+                  const res = await DocumentPicker.getDocumentAsync({
+                    type: ["application/json", "text/json", "*/*"],
                   });
-                } else {
-                  Alert.alert("Exported", `Saved to temporary file: ${uri}`);
-                }
-              } catch (e) {
-                Alert.alert("Export failed", e?.message || "Could not export");
-              }
-            }}
-          >
-            <Ionicons name="download-outline" size={18} color="#0a84ff" />
-            <Text style={styles.secondaryButtonText}>Export All</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={async () => {
-              try {
-                const res = await DocumentPicker.getDocumentAsync({
-                  type: ["application/json", "text/json", "*/*"],
-                });
-                if (res.canceled) return;
-                const file = res.assets?.[0];
-                if (!file?.uri) return;
-                const content = await FileSystem.readAsStringAsync(file.uri, {
-                  encoding: FileSystem.EncodingType.UTF8,
-                });
-                // Parse and let user choose which template and name
-                const parsed = JSON.parse(content);
-                if (!parsed?.templates?.length) {
-                  Alert.alert("No templates in file");
-                  return;
-                }
-                const startImport = (tpl) => {
-                  setNamePrompt({
-                    visible: true,
-                    defaultName: tpl.name || "Imported Template",
-                    error: "",
-                    onSubmit: async (nm) => {
-                      try {
-                        const info = await importTemplateObjectWithName(
-                          tpl,
-                          nm
-                        );
-                        setNamePrompt({
-                          visible: false,
-                          defaultName: "",
-                          onSubmit: null,
-                          error: "",
-                        });
-                        await load();
-                        Alert.alert(
-                          "Imported",
-                          `Created template \"${info.name}\".`
-                        );
-                      } catch (err) {
-                        const msg =
-                          err && err.message
-                            ? String(err.message)
-                            : "Template name must be unique.";
-                        setNamePrompt((s) => ({ ...s, error: msg }));
-                      }
-                    },
+                  if (res.canceled) return;
+                  const file = res.assets?.[0];
+                  if (!file?.uri) return;
+                  const content = await FileSystem.readAsStringAsync(file.uri, {
+                    encoding: FileSystem.EncodingType.UTF8,
                   });
-                };
-                if (parsed.templates.length === 1) {
-                  startImport(parsed.templates[0]);
-                } else {
-                  // Enable multi-select import with editable names
-                  const items = parsed.templates.map((t) => ({
-                    tpl: t,
-                    name: t.name || "Imported Template",
-                    selected: true,
-                    error: "",
-                  }));
-                  setMultiImport({ visible: true, items, busy: false });
+                  // Parse and let user choose which template and name
+                  const parsed = JSON.parse(content);
+                  if (!parsed?.templates?.length) {
+                    Alert.alert("No templates in file");
+                    return;
+                  }
+                  const startImport = (tpl) => {
+                    setNamePrompt({
+                      visible: true,
+                      defaultName: tpl.name || "Imported Template",
+                      error: "",
+                      onSubmit: async (nm) => {
+                        try {
+                          const info = await importTemplateObjectWithName(
+                            tpl,
+                            nm
+                          );
+                          setNamePrompt({
+                            visible: false,
+                            defaultName: "",
+                            onSubmit: null,
+                            error: "",
+                          });
+                          await load();
+                          Alert.alert(
+                            "Imported",
+                            `Created template \"${info.name}\".`
+                          );
+                        } catch (err) {
+                          const msg =
+                            err && err.message
+                              ? String(err.message)
+                              : "Template name must be unique.";
+                          setNamePrompt((s) => ({ ...s, error: msg }));
+                        }
+                      },
+                    });
+                  };
+                  if (parsed.templates.length === 1) {
+                    startImport(parsed.templates[0]);
+                  } else {
+                    // Enable multi-select import with editable names
+                    const items = parsed.templates.map((t) => ({
+                      tpl: t,
+                      name: t.name || "Imported Template",
+                      selected: true,
+                      error: "",
+                    }));
+                    setMultiImport({ visible: true, items, busy: false });
+                  }
+                } catch (e) {
+                  Alert.alert("Import failed", e?.message || "Invalid file");
                 }
-              } catch (e) {
-                Alert.alert("Import failed", e?.message || "Invalid file");
-              }
-            }}
-          >
-            <Ionicons name="cloud-upload-outline" size={18} color="#0a84ff" />
-            <Text style={styles.secondaryButtonText}>Import</Text>
-          </TouchableOpacity>
+              }}
+            >
+              <Ionicons name="cloud-upload-outline" size={18} color="#0a84ff" />
+              <Text style={styles.secondaryButtonText}>Import</Text>
+            </TouchableOpacity>
+          )}
         </View>
         <TouchableOpacity
           style={styles.resetCard}
@@ -431,6 +541,8 @@ const styles = StyleSheet.create({
   rowButtons: {
     flexDirection: "row",
     gap: 12,
+    flexWrap: "wrap",
+    alignItems: "flex-start",
     marginBottom: 12,
   },
   secondaryButton: {
@@ -443,6 +555,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#dbe7ff",
     backgroundColor: "#f5f9ff",
+    marginBottom: 8,
   },
   secondaryButtonText: { color: "#0a84ff", fontWeight: "600" },
   resetCard: {
