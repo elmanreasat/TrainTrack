@@ -714,3 +714,263 @@ export function copyWeekExercises(templateId, sourceWeek, destWeeks = []) {
       })
   );
 }
+
+// -------- Import/Export (JSON) --------
+// Export format metadata
+const EXPORT_FORMAT = "traintrack.v1";
+
+async function getTemplateDeep(templateId) {
+  await initDb();
+  const t = await queryFirst(
+    "SELECT id, name, weeks FROM templates WHERE id = ?;",
+    [templateId]
+  );
+  if (!t) return null;
+  const weeks = await queryAll(
+    "SELECT week, completed FROM weeks WHERE template_id = ? ORDER BY week ASC;",
+    [templateId]
+  );
+  const days = await queryAll(
+    "SELECT week, day, completed FROM days WHERE template_id = ? ORDER BY week ASC, day ASC;",
+    [templateId]
+  );
+  const exercises = await queryAll(
+    `SELECT week, day, name, sets, reps, weight, notes
+       FROM exercises
+      WHERE template_id = ?
+      ORDER BY week ASC, day ASC, id ASC;`,
+    [templateId]
+  );
+  return {
+    id: t.id,
+    name: t.name,
+    weeks: t.weeks,
+    weeksTable: weeks,
+    days,
+    exercises,
+  };
+}
+
+export async function exportTemplatesJson(templateIds = null) {
+  await initDb();
+  let ids = templateIds;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    const all = await getTemplates();
+    ids = all.map((t) => t.id);
+  }
+  const templates = [];
+  for (const id of ids) {
+    const obj = await getTemplateDeep(id);
+    if (obj) templates.push(obj);
+  }
+  return {
+    format: EXPORT_FORMAT,
+    exportedAt: new Date().toISOString(),
+    count: templates.length,
+    templates,
+  };
+}
+
+// Import templates from JSON string or object produced by exportTemplatesJson
+export async function importTemplatesJson(jsonOrObject) {
+  await initDb();
+  const payload =
+    typeof jsonOrObject === "string" ? JSON.parse(jsonOrObject) : jsonOrObject;
+  if (
+    !payload ||
+    payload.format !== EXPORT_FORMAT ||
+    !Array.isArray(payload.templates)
+  ) {
+    throw new Error("Invalid import file");
+  }
+
+  const results = [];
+  for (const tpl of payload.templates) {
+    const baseName = (tpl.name || "Imported Template").trim();
+    let nameToUse = baseName;
+    let attempt = 1;
+    // Ensure unique name by appending suffixes if needed
+    while (true) {
+      const existing = await queryFirst(
+        "SELECT id FROM templates WHERE name = ?;",
+        [nameToUse]
+      ).catch(() => null);
+      if (!existing) break;
+      attempt += 1;
+      nameToUse = `${baseName} (import ${attempt})`;
+    }
+
+    // Create template and then bulk insert dependent rows in a transaction
+    // Default weeks if not present
+    const totalWeeks = Number.isFinite(tpl.weeks) ? tpl.weeks : 0;
+    const res = await exec(
+      "INSERT INTO templates (name, weeks) VALUES (?, ?);",
+      [nameToUse, totalWeeks]
+    );
+    const newTemplateId = res?.insertId;
+
+    await new Promise((resolve, reject) => {
+      db.transaction(
+        (tx) => {
+          // Seed weeks table
+          if (Array.isArray(tpl.weeksTable)) {
+            for (const w of tpl.weeksTable) {
+              tx.executeSql(
+                "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, ?);",
+                [newTemplateId, w.week, w.completed ? 1 : 0]
+              );
+            }
+          }
+          // Seed 7 days rows where missing and set completion from import
+          if (Array.isArray(tpl.days) && tpl.days.length) {
+            for (const d of tpl.days) {
+              tx.executeSql(
+                "INSERT OR IGNORE INTO days (template_id, week, day, completed) VALUES (?, ?, ?, ?);",
+                [newTemplateId, d.week, d.day, d.completed ? 1 : 0]
+              );
+              tx.executeSql(
+                "UPDATE days SET completed = ? WHERE template_id = ? AND week = ? AND day = ?;",
+                [d.completed ? 1 : 0, newTemplateId, d.week, d.day]
+              );
+            }
+          } else if (totalWeeks > 0) {
+            // If days not provided, at least ensure 7 days per week exist
+            for (let w = 1; w <= totalWeeks; w++) {
+              tx.executeSql(
+                "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, 0);",
+                [newTemplateId, w]
+              );
+              for (let d = 1; d <= 7; d++) {
+                tx.executeSql(
+                  "INSERT OR IGNORE INTO days (template_id, week, day, completed) VALUES (?, ?, ?, 0);",
+                  [newTemplateId, w, d]
+                );
+              }
+            }
+          }
+          // Exercises
+          if (Array.isArray(tpl.exercises)) {
+            for (const ex of tpl.exercises) {
+              tx.executeSql(
+                "INSERT INTO exercises (template_id, week, day, name, sets, reps, weight, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+                [
+                  newTemplateId,
+                  ex.week,
+                  ex.day,
+                  ex.name || null,
+                  ex.sets ?? null,
+                  ex.reps ?? null,
+                  ex.weight ?? null,
+                  ex.notes ?? null,
+                ]
+              );
+            }
+          }
+        },
+        (err) => reject(err),
+        () => resolve()
+      );
+    });
+
+    results.push({ name: nameToUse, id: newTemplateId });
+  }
+
+  return { imported: results.length, templates: results };
+}
+
+// Import a single template object with a required unique name
+export async function importTemplateObjectWithName(templateObject, forcedName) {
+  await initDb();
+  if (!templateObject) throw new Error("Missing template data");
+  const baseName = (
+    forcedName ||
+    templateObject.name ||
+    "Imported Template"
+  ).trim();
+  if (!baseName) throw new Error("Name required");
+  // Enforce uniqueness strictly
+  const existing = await queryFirst(
+    "SELECT id FROM templates WHERE name = ?;",
+    [baseName]
+  ).catch(() => null);
+  if (existing) throw new Error("Template name must be unique.");
+
+  const totalWeeks = Number.isFinite(templateObject.weeks)
+    ? templateObject.weeks
+    : Array.isArray(templateObject.weeksTable)
+    ? templateObject.weeksTable.reduce((m, w) => Math.max(m, w.week || 0), 0)
+    : 0;
+
+  const res = await exec("INSERT INTO templates (name, weeks) VALUES (?, ?);", [
+    baseName,
+    totalWeeks,
+  ]);
+  const newTemplateId = res?.insertId;
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      (tx) => {
+        // Weeks
+        if (Array.isArray(templateObject.weeksTable)) {
+          for (const w of templateObject.weeksTable) {
+            if (!Number.isFinite(w.week)) continue;
+            tx.executeSql(
+              "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, ?);",
+              [newTemplateId, w.week, w.completed ? 1 : 0]
+            );
+          }
+        }
+        // Days
+        if (Array.isArray(templateObject.days) && templateObject.days.length) {
+          for (const d of templateObject.days) {
+            if (!Number.isFinite(d.week) || !Number.isFinite(d.day)) continue;
+            tx.executeSql(
+              "INSERT OR IGNORE INTO days (template_id, week, day, completed) VALUES (?, ?, ?, ?);",
+              [newTemplateId, d.week, d.day, d.completed ? 1 : 0]
+            );
+            tx.executeSql(
+              "UPDATE days SET completed = ? WHERE template_id = ? AND week = ? AND day = ?;",
+              [d.completed ? 1 : 0, newTemplateId, d.week, d.day]
+            );
+          }
+        } else if (totalWeeks > 0) {
+          for (let w = 1; w <= totalWeeks; w++) {
+            tx.executeSql(
+              "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, 0);",
+              [newTemplateId, w]
+            );
+            for (let d = 1; d <= 7; d++) {
+              tx.executeSql(
+                "INSERT OR IGNORE INTO days (template_id, week, day, completed) VALUES (?, ?, ?, 0);",
+                [newTemplateId, w, d]
+              );
+            }
+          }
+        }
+        // Exercises
+        if (Array.isArray(templateObject.exercises)) {
+          for (const ex of templateObject.exercises) {
+            if (!Number.isFinite(ex.week) || !Number.isFinite(ex.day)) continue;
+            tx.executeSql(
+              "INSERT INTO exercises (template_id, week, day, name, sets, reps, weight, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+              [
+                newTemplateId,
+                ex.week,
+                ex.day,
+                ex.name || null,
+                ex.sets ?? null,
+                ex.reps ?? null,
+                ex.weight ?? null,
+                ex.notes ?? null,
+              ]
+            );
+          }
+        }
+      },
+      (err) => reject(err),
+      () => resolve()
+    );
+  });
+
+  return { id: newTemplateId, name: baseName };
+}
