@@ -42,6 +42,16 @@ export default function TemplateListScreen({ navigation }) {
     onSubmit: null,
     error: "",
   });
+  const [pickPrompt, setPickPrompt] = useState({
+    visible: false,
+    templates: [],
+    onSelect: null,
+  });
+  const [multiImport, setMultiImport] = useState({
+    visible: false,
+    items: [],
+    busy: false,
+  });
 
   const load = async () => {
     setRefreshing(true);
@@ -242,9 +252,7 @@ export default function TemplateListScreen({ navigation }) {
                   Alert.alert("No templates in file");
                   return;
                 }
-                // If multiple templates, ask user to pick via a simple Alert action sheet style
-                if (parsed.templates.length === 1) {
-                  const tpl = parsed.templates[0];
+                const startImport = (tpl) => {
                   setNamePrompt({
                     visible: true,
                     defaultName: tpl.name || "Imported Template",
@@ -266,57 +274,27 @@ export default function TemplateListScreen({ navigation }) {
                           "Imported",
                           `Created template \"${info.name}\".`
                         );
-                      } catch (e) {
-                        setNamePrompt((s) => ({
-                          ...s,
-                          error: e?.message || "Could not import",
-                        }));
+                      } catch (err) {
+                        const msg =
+                          err && err.message
+                            ? String(err.message)
+                            : "Template name must be unique.";
+                        setNamePrompt((s) => ({ ...s, error: msg }));
                       }
                     },
                   });
+                };
+                if (parsed.templates.length === 1) {
+                  startImport(parsed.templates[0]);
                 } else {
-                  // Multiple templates: quick picker via Alert with first three + 'Pick first' fallback
-                  const options = parsed.templates
-                    .slice(0, 3)
-                    .map((t, idx) => ({
-                      text: t.name || `Template ${idx + 1}`,
-                      onPress: () => {
-                        setNamePrompt({
-                          visible: true,
-                          defaultName: t.name || "Imported Template",
-                          error: "",
-                          onSubmit: async (nm) => {
-                            try {
-                              const info = await importTemplateObjectWithName(
-                                t,
-                                nm
-                              );
-                              setNamePrompt({
-                                visible: false,
-                                defaultName: "",
-                                onSubmit: null,
-                                error: "",
-                              });
-                              await load();
-                              Alert.alert(
-                                "Imported",
-                                `Created template \"${info.name}\".`
-                              );
-                            } catch (e) {
-                              setNamePrompt((s) => ({
-                                ...s,
-                                error: e?.message || "Could not import",
-                              }));
-                            }
-                          },
-                        });
-                      },
-                    }));
-                  Alert.alert(
-                    "Choose Template",
-                    "Select one template to import",
-                    [...options, { text: "Cancel", style: "cancel" }]
-                  );
+                  // Enable multi-select import with editable names
+                  const items = parsed.templates.map((t) => ({
+                    tpl: t,
+                    name: t.name || "Imported Template",
+                    selected: true,
+                    error: "",
+                  }));
+                  setMultiImport({ visible: true, items, busy: false });
                 }
               } catch (e) {
                 Alert.alert("Import failed", e?.message || "Invalid file");
@@ -363,6 +341,23 @@ export default function TemplateListScreen({ navigation }) {
 
       {/* name prompt modal */}
       <NamePromptModal state={namePrompt} setState={setNamePrompt} />
+      {/* pick template modal */}
+      <TemplatePickModal state={pickPrompt} setState={setPickPrompt} />
+      {/* multi import modal */}
+      <TemplateMultiImportModal
+        state={multiImport}
+        setState={setMultiImport}
+        existingNames={templates.map((t) => t.name)}
+        onDone={async (importedCount, failedCount) => {
+          setMultiImport({ visible: false, items: [], busy: false });
+          await load();
+          Alert.alert(
+            "Import complete",
+            `Imported ${importedCount} template(s)` +
+              (failedCount ? `, ${failedCount} failed` : "")
+          );
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -550,6 +545,262 @@ function NamePromptModal({ state, setState }) {
             style={{ paddingVertical: 10, paddingHorizontal: 12 }}
           >
             <Text style={{ color: "#0a84ff", fontWeight: "700" }}>Import</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// Modal to pick a template from an imported file
+function TemplatePickModal({ state, setState }) {
+  if (!state.visible) return null;
+  return (
+    <View
+      style={{
+        position: "absolute",
+        left: 0,
+        right: 0,
+        top: 0,
+        bottom: 0,
+        backgroundColor: "rgba(0,0,0,0.3)",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+      }}
+      pointerEvents="box-none"
+    >
+      <View
+        style={{
+          backgroundColor: "#fff",
+          borderRadius: 12,
+          width: "100%",
+          maxHeight: 420,
+        }}
+      >
+        <View
+          style={{ padding: 16, borderBottomWidth: 1, borderColor: "#eee" }}
+        >
+          <Text style={{ fontWeight: "700" }}>Choose Template</Text>
+          <Text style={{ color: "#666", marginTop: 4, fontSize: 12 }}>
+            Select one template to import
+          </Text>
+        </View>
+        <FlatList
+          data={state.templates || []}
+          keyExtractor={(_, idx) => String(idx)}
+          renderItem={({ item }) => {
+            const exCount = Array.isArray(item.exercises)
+              ? item.exercises.length
+              : 0;
+            const wCount = Number.isFinite(item.weeks)
+              ? item.weeks
+              : Array.isArray(item.weeksTable)
+              ? item.weeksTable.reduce((m, w) => Math.max(m, w.week || 0), 0)
+              : 0;
+            return (
+              <TouchableOpacity
+                style={{
+                  padding: 14,
+                  borderBottomWidth: 1,
+                  borderColor: "#f1f1f1",
+                }}
+                onPress={() => state.onSelect?.(item)}
+              >
+                <Text style={{ fontWeight: "600" }}>
+                  {item.name || "Untitled Template"}
+                </Text>
+                <Text style={{ color: "#666", marginTop: 4, fontSize: 12 }}>
+                  {wCount} weeks · {exCount} exercises
+                </Text>
+              </TouchableOpacity>
+            );
+          }}
+          style={{ maxHeight: 320 }}
+        />
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "flex-end",
+            padding: 12,
+          }}
+        >
+          <TouchableOpacity
+            onPress={() =>
+              setState({ visible: false, templates: [], onSelect: null })
+            }
+            style={{ paddingVertical: 10, paddingHorizontal: 12 }}
+          >
+            <Text>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// Modal to import multiple templates at once
+function TemplateMultiImportModal({ state, setState, existingNames, onDone }) {
+  if (!state.visible) return null;
+  const items = state.items || [];
+  const nameExists = (name, idx) => {
+    if (!name) return "Name required";
+    const inList = items.some(
+      (it, i) => i !== idx && it.selected && it.name.trim() === name.trim()
+    );
+    const inDb = existingNames?.includes(name.trim());
+    if (inList || inDb) return "Template name must be unique.";
+    return "";
+  };
+  const updateItem = (idx, patch) => {
+    const next = items.slice();
+    next[idx] = { ...next[idx], ...patch };
+    setState({ ...state, items: next });
+  };
+  const toggleSelect = (idx) =>
+    updateItem(idx, { selected: !items[idx].selected, error: "" });
+  const setName = (idx, name) => updateItem(idx, { name, error: "" });
+  const importAll = async () => {
+    if (state.busy) return;
+    // Validate names
+    let hasError = false;
+    const next = items.map((it, idx) => {
+      if (!it.selected) return it;
+      const err = nameExists(it.name, idx);
+      if (err) hasError = true;
+      return { ...it, error: err };
+    });
+    if (hasError) {
+      setState({ ...state, items: next });
+      return;
+    }
+    // Import
+    setState({ ...state, busy: true });
+    let ok = 0,
+      fail = 0;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (!it.selected) continue;
+      try {
+        await importTemplateObjectWithName(it.tpl, it.name.trim());
+        ok += 1;
+      } catch (err) {
+        fail += 1;
+      }
+    }
+    setState({ visible: false, items: [], busy: false });
+    onDone?.(ok, fail);
+  };
+
+  return (
+    <View
+      style={{
+        position: "absolute",
+        left: 0,
+        right: 0,
+        top: 0,
+        bottom: 0,
+        backgroundColor: "rgba(0,0,0,0.3)",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+      }}
+      pointerEvents="box-none"
+    >
+      <View
+        style={{
+          backgroundColor: "#fff",
+          borderRadius: 12,
+          width: "100%",
+          maxHeight: 520,
+        }}
+      >
+        <View
+          style={{ padding: 16, borderBottomWidth: 1, borderColor: "#eee" }}
+        >
+          <Text style={{ fontWeight: "700" }}>Import Templates</Text>
+          <Text style={{ color: "#666", marginTop: 4, fontSize: 12 }}>
+            Select and name templates to import
+          </Text>
+        </View>
+        <FlatList
+          data={items}
+          keyExtractor={(_, idx) => String(idx)}
+          renderItem={({ item, index }) => (
+            <View
+              style={{
+                padding: 12,
+                borderBottomWidth: 1,
+                borderColor: "#f1f1f1",
+              }}
+            >
+              <View
+                style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+              >
+                <TouchableOpacity
+                  onPress={() => toggleSelect(index)}
+                  style={{ padding: 6 }}
+                >
+                  <Ionicons
+                    name={item.selected ? "checkbox-outline" : "square-outline"}
+                    size={20}
+                    color={item.selected ? "#0a84ff" : "#999"}
+                  />
+                </TouchableOpacity>
+                <Text style={{ flex: 1, fontWeight: "600" }} numberOfLines={1}>
+                  {item.tpl?.name || "Untitled Template"}
+                </Text>
+              </View>
+              <TextInput
+                value={item.name}
+                onChangeText={(v) => setName(index, v)}
+                placeholder="New unique name"
+                style={{
+                  borderWidth: 1,
+                  borderColor: item.error ? "#cc0000" : "#ddd",
+                  borderRadius: 8,
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                  marginTop: 8,
+                }}
+              />
+              {!!item.error && (
+                <Text style={{ color: "#cc0000", marginTop: 6 }}>
+                  {item.error}
+                </Text>
+              )}
+            </View>
+          )}
+          style={{ maxHeight: 380 }}
+        />
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "flex-end",
+            padding: 12,
+            gap: 8,
+          }}
+        >
+          <TouchableOpacity
+            disabled={state.busy}
+            onPress={() => setState({ visible: false, items: [], busy: false })}
+            style={{ paddingVertical: 10, paddingHorizontal: 12 }}
+          >
+            <Text>Cancel</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={importAll}
+            disabled={state.busy}
+            style={{ paddingVertical: 10, paddingHorizontal: 12 }}
+          >
+            <Text
+              style={{
+                color: state.busy ? "#999" : "#0a84ff",
+                fontWeight: "700",
+              }}
+            >
+              {state.busy ? "Importing…" : "Import Selected"}
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
