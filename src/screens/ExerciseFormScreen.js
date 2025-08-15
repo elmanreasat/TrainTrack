@@ -3,10 +3,13 @@ import {
   View,
   Text,
   TextInput,
-  Button,
   StyleSheet,
   Alert,
   ScrollView,
+  KeyboardAvoidingView,
+  Platform,
+  TouchableOpacity,
+  SafeAreaView,
 } from "react-native";
 import { addExercise } from "../db/db";
 
@@ -42,63 +45,106 @@ export default function ExerciseFormScreen({ route, navigation }) {
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.header}>Add Exercise</Text>
-      <TextInput
-        style={styles.input}
-        placeholder="Name"
-        value={name}
-        onChangeText={setName}
-      />
+    <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 64 : 0}
+      >
+        <ScrollView contentContainerStyle={styles.container}>
+          <Text style={styles.header}>Add Exercise</Text>
 
-      <View style={styles.row}>
-        <TextInput
-          style={[styles.input, styles.num]}
-          placeholder="Sets"
-          keyboardType="number-pad"
-          value={sets}
-          onChangeText={setSets}
-        />
-        <TextInput
-          style={[styles.input, styles.num]}
-          placeholder="Reps"
-          keyboardType="number-pad"
-          value={reps}
-          onChangeText={setReps}
-        />
-        <TextInput
-          style={[styles.input, styles.num]}
-          placeholder="Weight"
-          keyboardType="decimal-pad"
-          value={weight}
-          onChangeText={setWeight}
-        />
-      </View>
+          <View style={styles.field}>
+            <Text style={styles.label}>Name</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g., Bench Press"
+              placeholderTextColor="#999"
+              value={name}
+              onChangeText={setName}
+            />
+          </View>
 
-      <TextInput
-        style={[styles.input, { height: 100 }]}
-        placeholder="Notes"
-        value={notes}
-        onChangeText={setNotes}
-        multiline
-      />
+          <View style={styles.row}>
+            <View style={styles.field}>
+              <Text style={styles.label}>Sets</Text>
+              <TextInput
+                style={[styles.input, styles.num]}
+                placeholder="Sets"
+                keyboardType="number-pad"
+                placeholderTextColor="#999"
+                value={sets}
+                onChangeText={setSets}
+              />
+            </View>
+            <View style={styles.field}>
+              <Text style={styles.label}>Reps</Text>
+              <TextInput
+                style={[styles.input, styles.num]}
+                placeholder="Reps"
+                keyboardType="number-pad"
+                placeholderTextColor="#999"
+                value={reps}
+                onChangeText={setReps}
+              />
+            </View>
+            <View style={styles.field}>
+              <Text style={styles.label}>Weight</Text>
+              <TextInput
+                style={[styles.input, styles.num]}
+                placeholder="kg/lb"
+                keyboardType="decimal-pad"
+                placeholderTextColor="#999"
+                value={weight}
+                onChangeText={setWeight}
+              />
+            </View>
+          </View>
 
-      <Button title="Add" onPress={onAdd} />
-    </ScrollView>
+          <View style={styles.field}>
+            <Text style={styles.label}>Notes</Text>
+            <TextInput
+              style={[styles.input, { height: 80 }]}
+              placeholder="Optional notes"
+              placeholderTextColor="#999"
+              value={notes}
+              onChangeText={setNotes}
+              multiline
+            />
+          </View>
+
+          <TouchableOpacity style={styles.primaryBtn} onPress={onAdd}>
+            <Text style={styles.primaryBtnText}>Add Exercise</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 16, gap: 12 },
-  header: { fontSize: 18, fontWeight: "600" },
+  container: { padding: 16, gap: 12, paddingBottom: 24 },
+  header: { fontSize: 20, fontWeight: "800", color: "#111", marginBottom: 4 },
   row: { flexDirection: "row", gap: 8 },
+  field: { flex: 1 },
+  label: { fontSize: 12, color: "#666", marginBottom: 6, fontWeight: "600" },
   input: {
     flex: 1,
     borderWidth: 1,
-    borderColor: "#ccc",
-    borderRadius: 6,
-    padding: 10,
+    borderColor: "#e5e5e5",
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     backgroundColor: "#fff",
   },
   num: { maxWidth: 110 },
+  primaryBtn: {
+    marginTop: 8,
+    alignSelf: "flex-start",
+    backgroundColor: "#000",
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+  },
+  primaryBtnText: { color: "#fff", fontWeight: "700" },
 });
