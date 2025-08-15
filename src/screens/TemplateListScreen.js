@@ -9,6 +9,7 @@ import {
   StyleSheet,
   TouchableOpacity,
   SafeAreaView,
+  Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -54,6 +55,12 @@ export default function TemplateListScreen({ navigation }) {
   });
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
+  const [exportPrompt, setExportPrompt] = useState({
+    visible: false,
+    filename: "",
+    json: "",
+    busy: false,
+  });
 
   const toggleSelect = (id) => {
     setSelectedIds((prev) => {
@@ -82,16 +89,26 @@ export default function TemplateListScreen({ navigation }) {
     try {
       const payload = await exportTemplatesJson(ids);
       const json = JSON.stringify(payload, null, 2);
-      const uri =
-        FileSystem.cacheDirectory +
-        `traintrack-export-${Date.now()}-selected-${ids.length}.json`;
-      await FileSystem.writeAsStringAsync(uri, json, {
-        encoding: FileSystem.EncodingType.UTF8,
-      });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: "application/json" });
+      const filename = `traintrack-export-${Date.now()}-selected-${
+        ids.length
+      }.json`;
+
+      const shareIt = async () => {
+        const uri = FileSystem.cacheDirectory + filename;
+        await FileSystem.writeAsStringAsync(uri, json, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(uri, { mimeType: "application/json" });
+        } else {
+          Alert.alert("Exported", `Saved to temporary file: ${uri}`);
+        }
+      };
+
+      if (Platform.OS === "android") {
+        setExportPrompt({ visible: true, filename, json, busy: false });
       } else {
-        Alert.alert("Exported", `Saved to temporary file: ${uri}`);
+        await shareIt();
       }
     } catch (e) {
       Alert.alert("Export failed", e?.message || "Could not export");
@@ -186,16 +203,24 @@ export default function TemplateListScreen({ navigation }) {
     try {
       const payload = await exportTemplatesJson([id]);
       const json = JSON.stringify(payload, null, 2);
-      const uri =
-        FileSystem.cacheDirectory +
-        `traintrack-export-${Date.now()}-template-${id}.json`;
-      await FileSystem.writeAsStringAsync(uri, json, {
-        encoding: FileSystem.EncodingType.UTF8,
-      });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: "application/json" });
+      const filename = `traintrack-export-${Date.now()}-template-${id}.json`;
+
+      const shareIt = async () => {
+        const uri = FileSystem.cacheDirectory + filename;
+        await FileSystem.writeAsStringAsync(uri, json, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(uri, { mimeType: "application/json" });
+        } else {
+          Alert.alert("Exported", `Saved to temporary file: ${uri}`);
+        }
+      };
+
+      if (Platform.OS === "android") {
+        setExportPrompt({ visible: true, filename, json, busy: false });
       } else {
-        Alert.alert("Exported", `Saved to temporary file: ${uri}`);
+        await shareIt();
       }
     } catch (e) {
       Alert.alert("Export failed", e?.message || "Could not export");
@@ -468,6 +493,8 @@ export default function TemplateListScreen({ navigation }) {
           );
         }}
       />
+      {/* export destination modal (Android) */}
+      <ExportDestinationModal state={exportPrompt} setState={setExportPrompt} />
     </SafeAreaView>
   );
 }
@@ -916,6 +943,146 @@ function TemplateMultiImportModal({ state, setState, existingNames, onDone }) {
             </Text>
           </TouchableOpacity>
         </View>
+      </View>
+    </View>
+  );
+}
+
+// Bottom-sheet style modal for choosing export destination (Android)
+function ExportDestinationModal({ state, setState }) {
+  if (!state.visible) return null;
+  const { filename, json, busy } = state;
+  const close = () =>
+    setState({ visible: false, filename: "", json: "", busy: false });
+
+  const saveToFolder = async () => {
+    if (busy) return;
+    try {
+      setState((s) => ({ ...s, busy: true }));
+      const perm =
+        await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!perm.granted) {
+        // If not granted, fall back to share action
+        await shareNow();
+        return;
+      }
+      const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
+        perm.directoryUri,
+        filename,
+        "application/json"
+      );
+      await FileSystem.writeAsStringAsync(fileUri, json, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+      Alert.alert("Saved", `Saved as ${filename}`);
+      close();
+    } catch (err) {
+      Alert.alert("Save failed", err?.message || "Unable to save the file");
+      setState((s) => ({ ...s, busy: false }));
+    }
+  };
+
+  const shareNow = async () => {
+    if (busy) return;
+    try {
+      setState((s) => ({ ...s, busy: true }));
+      const tempUri = FileSystem.cacheDirectory + filename;
+      await FileSystem.writeAsStringAsync(tempUri, json, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(tempUri, { mimeType: "application/json" });
+      } else {
+        Alert.alert("Exported", `Saved to temporary file: ${tempUri}`);
+      }
+      close();
+    } catch (err) {
+      Alert.alert("Share failed", err?.message || "Unable to share the file");
+      setState((s) => ({ ...s, busy: false }));
+    }
+  };
+
+  return (
+    <View
+      style={{
+        position: "absolute",
+        left: 0,
+        right: 0,
+        top: 0,
+        bottom: 0,
+        backgroundColor: "rgba(0,0,0,0.3)",
+        justifyContent: "flex-end",
+      }}
+      pointerEvents="box-none"
+    >
+      <View
+        style={{
+          backgroundColor: "#fff",
+          borderTopLeftRadius: 16,
+          borderTopRightRadius: 16,
+          paddingBottom: 12,
+        }}
+      >
+        <View
+          style={{ padding: 16, borderBottomWidth: 1, borderColor: "#eee" }}
+        >
+          <Text style={{ fontWeight: "700" }}>Export</Text>
+          <Text
+            style={{ color: "#666", marginTop: 4, fontSize: 12 }}
+            numberOfLines={1}
+          >
+            {filename}
+          </Text>
+        </View>
+        <TouchableOpacity
+          disabled={busy}
+          onPress={saveToFolder}
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 10,
+            paddingHorizontal: 16,
+            paddingVertical: 14,
+          }}
+        >
+          <Ionicons name="folder-outline" size={20} color="#0a84ff" />
+          <Text style={{ color: busy ? "#999" : "#0a84ff", fontWeight: "700" }}>
+            Save to folder
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          disabled={busy}
+          onPress={shareNow}
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 10,
+            paddingHorizontal: 16,
+            paddingVertical: 14,
+          }}
+        >
+          <Ionicons name="share-social-outline" size={20} color="#0a84ff" />
+          <Text style={{ color: busy ? "#999" : "#0a84ff", fontWeight: "700" }}>
+            Share…
+          </Text>
+        </TouchableOpacity>
+        <View style={{ height: 8 }} />
+        <TouchableOpacity
+          disabled={busy}
+          onPress={close}
+          style={{
+            alignItems: "center",
+            justifyContent: "center",
+            paddingVertical: 14,
+            marginHorizontal: 12,
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: "#eee",
+            backgroundColor: "#fafafa",
+          }}
+        >
+          <Text style={{ color: "#333", fontWeight: "600" }}>Cancel</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
