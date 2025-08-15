@@ -3,7 +3,6 @@ import {
   View,
   Text,
   TextInput,
-  Button,
   FlatList,
   Alert,
   StyleSheet,
@@ -18,11 +17,7 @@ import {
   deleteTemplate,
   resetDb,
 } from "../db/db";
-import {
-  exportTemplatesJson,
-  importTemplatesJson,
-  importTemplateObjectWithName,
-} from "../db/db";
+import { exportTemplatesJson, importTemplateObjectWithName } from "../db/db";
 import * as FileSystem from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import * as DocumentPicker from "expo-document-picker";
@@ -32,21 +27,11 @@ export default function TemplateListScreen({ navigation }) {
   const [weeks, setWeeks] = useState("");
   const [templates, setTemplates] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [importState, setImportState] = useState({
-    visible: false,
-    template: null,
-    error: "",
-  });
   const [namePrompt, setNamePrompt] = useState({
     visible: false,
     defaultName: "",
     onSubmit: null,
     error: "",
-  });
-  const [pickPrompt, setPickPrompt] = useState({
-    visible: false,
-    templates: [],
-    onSelect: null,
   });
   const [multiImport, setMultiImport] = useState({
     visible: false,
@@ -182,51 +167,7 @@ export default function TemplateListScreen({ navigation }) {
     }
   };
 
-  const confirmDelete = (id) => {
-    Alert.alert(
-      "Delete Template",
-      "This will remove the template and its exercises.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            await deleteTemplate(id);
-            await load();
-          },
-        },
-      ]
-    );
-  };
-
-  const onExportOne = async (id) => {
-    try {
-      const payload = await exportTemplatesJson([id]);
-      const json = JSON.stringify(payload, null, 2);
-      const filename = `traintrack-export-${Date.now()}-template-${id}.json`;
-
-      const shareIt = async () => {
-        const uri = FileSystem.cacheDirectory + filename;
-        await FileSystem.writeAsStringAsync(uri, json, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-        if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(uri, { mimeType: "application/json" });
-        } else {
-          Alert.alert("Exported", `Saved to temporary file: ${uri}`);
-        }
-      };
-
-      if (Platform.OS === "android") {
-        setExportPrompt({ visible: true, filename, json, busy: false });
-      } else {
-        await shareIt();
-      }
-    } catch (e) {
-      Alert.alert("Export failed", e?.message || "Could not export");
-    }
-  };
+  // removed unused handlers: confirmDelete, onExportOne
 
   const renderItem = ({ item }) => {
     const isSelected = selectedIds.has(item.id);
@@ -497,8 +438,7 @@ export default function TemplateListScreen({ navigation }) {
 
       {/* name prompt modal */}
       <NamePromptModal state={namePrompt} setState={setNamePrompt} />
-      {/* pick template modal */}
-      <TemplatePickModal state={pickPrompt} setState={setPickPrompt} />
+      {/* pick template modal removed */}
       {/* multi import modal */}
       <TemplateMultiImportModal
         state={multiImport}
@@ -578,12 +518,6 @@ const styles = StyleSheet.create({
   },
   cardTitle: { fontSize: 16, fontWeight: "700" },
   cardSubtitle: { color: "#777", marginTop: 4 },
-  iconButton: {
-    marginLeft: 8,
-    padding: 6,
-    borderRadius: 16,
-    backgroundColor: "rgba(204,0,0,0.06)",
-  },
   emptyText: { textAlign: "center", marginTop: 16, color: "#666" },
   footer: { marginTop: 8 },
   rowButtons: {
@@ -713,92 +647,7 @@ function NamePromptModal({ state, setState }) {
   );
 }
 
-// Modal to pick a template from an imported file
-function TemplatePickModal({ state, setState }) {
-  if (!state.visible) return null;
-  return (
-    <View
-      style={{
-        position: "absolute",
-        left: 0,
-        right: 0,
-        top: 0,
-        bottom: 0,
-        backgroundColor: "rgba(0,0,0,0.3)",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 24,
-      }}
-      pointerEvents="box-none"
-    >
-      <View
-        style={{
-          backgroundColor: "#fff",
-          borderRadius: 12,
-          width: "100%",
-          maxHeight: 420,
-        }}
-      >
-        <View
-          style={{ padding: 16, borderBottomWidth: 1, borderColor: "#eee" }}
-        >
-          <Text style={{ fontWeight: "700" }}>Choose Template</Text>
-          <Text style={{ color: "#666", marginTop: 4, fontSize: 12 }}>
-            Select one template to import
-          </Text>
-        </View>
-        <FlatList
-          data={state.templates || []}
-          keyExtractor={(_, idx) => String(idx)}
-          renderItem={({ item }) => {
-            const exCount = Array.isArray(item.exercises)
-              ? item.exercises.length
-              : 0;
-            const wCount = Number.isFinite(item.weeks)
-              ? item.weeks
-              : Array.isArray(item.weeksTable)
-              ? item.weeksTable.reduce((m, w) => Math.max(m, w.week || 0), 0)
-              : 0;
-            return (
-              <TouchableOpacity
-                style={{
-                  padding: 14,
-                  borderBottomWidth: 1,
-                  borderColor: "#f1f1f1",
-                }}
-                onPress={() => state.onSelect?.(item)}
-              >
-                <Text style={{ fontWeight: "600" }}>
-                  {item.name || "Untitled Template"}
-                </Text>
-                <Text style={{ color: "#666", marginTop: 4, fontSize: 12 }}>
-                  {wCount} weeks · {exCount} exercises
-                </Text>
-              </TouchableOpacity>
-            );
-          }}
-          style={{ maxHeight: 320 }}
-        />
-        <View
-          style={{
-            flexDirection: "row",
-            justifyContent: "flex-end",
-            padding: 12,
-          }}
-        >
-          <TouchableOpacity
-            onPress={() =>
-              setState({ visible: false, templates: [], onSelect: null })
-            }
-            style={{ paddingVertical: 10, paddingHorizontal: 12 }}
-          >
-            <Text>Cancel</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </View>
-  );
-}
+// TemplatePickModal removed (unused)
 
 // Modal to import multiple templates at once
 function TemplateMultiImportModal({ state, setState, existingNames, onDone }) {
