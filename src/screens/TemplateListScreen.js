@@ -7,9 +7,9 @@ import {
   Alert,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   Platform,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import {
   createTemplate,
@@ -212,7 +212,10 @@ export default function TemplateListScreen({ navigation }) {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView
+      style={styles.container}
+      edges={["top", "bottom", "left", "right"]}
+    >
       <View style={styles.createCard}>
         <Text style={styles.header}>Create Template</Text>
         <View style={styles.row}>

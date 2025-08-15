@@ -5,8 +5,8 @@ import {
   FlatList,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { listWeeks, ensureWeekDays, setWeekStatus } from "../db/db";
 
@@ -67,7 +67,10 @@ export default function WeekViewScreen({ route, navigation }) {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView
+      style={styles.container}
+      edges={["top", "bottom", "left", "right"]}
+    >
       {weeks.length > 0 && (
         <View style={styles.progressHeader}>
           {(() => {
@@ -103,6 +106,7 @@ export default function WeekViewScreen({ route, navigation }) {
             No weeks found.
           </Text>
         }
+        contentContainerStyle={{ paddingBottom: 96 }}
       />
       <TouchableOpacity
         style={styles.copyWeekButton}
@@ -159,7 +163,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 16,
     right: 16,
-    bottom: 16,
+    bottom: 24,
     height: 48,
     borderRadius: 12,
     backgroundColor: "#000",
