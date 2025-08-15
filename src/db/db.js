@@ -1,318 +1,239 @@
-// Data layer using expo-sqlite legacy API
-import * as SQLite from "expo-sqlite/legacy";
+// Data layer using expo-sqlite modern async API (SDK 53+)
+import * as SQLite from "expo-sqlite";
 
 // Simple console logs (always on)
 const log = (...args) => console.log("[DB]", ...args);
 const warn = (...args) => console.warn("[DB]", ...args);
 
-const db = SQLite.openDatabase("workouts.db");
+let _db = null;
+async function getDb() {
+  if (!_db) {
+    _db = await SQLite.openDatabaseAsync("workouts.db");
+  }
+  return _db;
+}
 
 // A promise that resolves when the DB schema is initialized and migrations are applied
 let dbReadyPromise = null;
 
-// Small helpers to reduce boilerplate
-const queryAll = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.readTransaction((tx) => {
-      tx.executeSql(
-        sql,
-        params,
-        (_, { rows }) => resolve(rows._array),
-        (_, err) => {
-          reject(err);
-          return true;
-        }
-      );
-    });
-  });
+// Small helpers (async/await wrappers)
+async function queryAll(sql, params = []) {
+  const db = await getDb();
+  return db.getAllAsync(sql, params);
+}
 
-const queryFirst = (sql, params = []) =>
-  queryAll(sql, params).then((a) => a[0] || null);
+async function queryFirst(sql, params = []) {
+  const db = await getDb();
+  if (typeof db.getFirstAsync === "function") {
+    return db.getFirstAsync(sql, params);
+  }
+  const arr = await db.getAllAsync(sql, params);
+  return arr[0] || null;
+}
 
-const exec = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.transaction((tx) => {
-      tx.executeSql(
-        sql,
-        params,
-        (_, res) => resolve(res),
-        (_, err) => {
-          reject(err);
-          return true;
-        }
-      );
-    });
-  });
+async function exec(sql, params = []) {
+  const db = await getDb();
+  // Returns { changes, lastInsertRowId }
+  return db.runAsync(sql, params);
+}
 
-// Execute a list of statements in a single transaction
-const execBatch = (stmts) =>
-  new Promise((resolve, reject) => {
-    db.transaction(
-      (tx) => {
-        for (const [sql, params = []] of stmts) tx.executeSql(sql, params);
-      },
-      (err) => reject(err),
-      () => resolve()
-    );
+async function execBatch(stmts) {
+  const db = await getDb();
+  await db.withTransactionAsync(async () => {
+    for (const [sql, params = []] of stmts) {
+      await db.runAsync(sql, params);
+    }
   });
+}
 
 export function initDb() {
   if (!dbReadyPromise) {
-    dbReadyPromise = new Promise((resolve, reject) => {
+    dbReadyPromise = (async () => {
       log("initDb: start");
-      // 1) Ensure base tables exist
-      db.transaction(
-        (tx) => {
-          // Ensure cascading deletes are honored
-          tx.executeSql(
-            "PRAGMA foreign_keys = ON;",
-            [],
-            () => log("initDb: PRAGMA foreign_keys=ON applied"),
-            (t, e) => {
-              warn("initDb: failed to enable foreign_keys", e);
-              return true;
-            }
-          );
-          const tables = [
-            {
-              name: "templates",
-              sql: `CREATE TABLE IF NOT EXISTS templates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                weeks INTEGER
-              );`,
-            },
-            {
-              name: "weeks",
-              sql: `CREATE TABLE IF NOT EXISTS weeks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                template_id INTEGER NOT NULL,
-                week INTEGER NOT NULL,
-                completed INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(template_id, week),
-                FOREIGN KEY(template_id) REFERENCES templates(id) ON DELETE CASCADE
-              );`,
-            },
-            {
-              name: "days",
-              sql: `CREATE TABLE IF NOT EXISTS days (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                template_id INTEGER NOT NULL,
-                week INTEGER NOT NULL,
-                day INTEGER NOT NULL,
-                completed INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(template_id, week, day),
-                FOREIGN KEY(template_id) REFERENCES templates(id) ON DELETE CASCADE
-              );`,
-            },
-            {
-              name: "exercises",
-              sql: `CREATE TABLE IF NOT EXISTS exercises (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                template_id INTEGER NOT NULL,
-                week INTEGER NOT NULL,
-                day INTEGER NOT NULL,
-                name TEXT,
-                sets INTEGER,
-                reps INTEGER,
-                weight REAL,
-                notes TEXT,
-                FOREIGN KEY(template_id) REFERENCES templates(id) ON DELETE CASCADE
-              );`,
-            },
-          ];
-          tables.forEach(({ name, sql }) => {
-            tx.executeSql(
-              sql,
-              [],
-              () => log(`initDb: ensured table ${name}`),
-              (t, e) => {
-                warn(`initDb: create ${name} failed`, e);
-                return false;
-              }
+      const db = await getDb();
+
+      // 1) Ensure base tables exist and PRAGMA
+      await db.withTransactionAsync(async () => {
+        try {
+          await db.runAsync("PRAGMA foreign_keys = ON;");
+          log("initDb: PRAGMA foreign_keys=ON applied");
+        } catch (e) {
+          warn("initDb: failed to enable foreign_keys", e);
+        }
+        const tables = [
+          {
+            name: "templates",
+            sql: `CREATE TABLE IF NOT EXISTS templates (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL UNIQUE,
+              weeks INTEGER
+            );`,
+          },
+          {
+            name: "weeks",
+            sql: `CREATE TABLE IF NOT EXISTS weeks (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              template_id INTEGER NOT NULL,
+              week INTEGER NOT NULL,
+              completed INTEGER NOT NULL DEFAULT 0,
+              UNIQUE(template_id, week),
+              FOREIGN KEY(template_id) REFERENCES templates(id) ON DELETE CASCADE
+            );`,
+          },
+          {
+            name: "days",
+            sql: `CREATE TABLE IF NOT EXISTS days (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              template_id INTEGER NOT NULL,
+              week INTEGER NOT NULL,
+              day INTEGER NOT NULL,
+              completed INTEGER NOT NULL DEFAULT 0,
+              UNIQUE(template_id, week, day),
+              FOREIGN KEY(template_id) REFERENCES templates(id) ON DELETE CASCADE
+            );`,
+          },
+          {
+            name: "exercises",
+            sql: `CREATE TABLE IF NOT EXISTS exercises (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              template_id INTEGER NOT NULL,
+              week INTEGER NOT NULL,
+              day INTEGER NOT NULL,
+              name TEXT,
+              sets INTEGER,
+              reps INTEGER,
+              weight REAL,
+              notes TEXT,
+              FOREIGN KEY(template_id) REFERENCES templates(id) ON DELETE CASCADE
+            );`,
+          },
+        ];
+        for (const { name, sql } of tables) {
+          try {
+            await db.runAsync(sql);
+            log(`initDb: ensured table ${name}`);
+          } catch (e) {
+            warn(`initDb: create ${name} failed`, e);
+          }
+        }
+      });
+
+      // 2) Lightweight migrations
+      log("initDb: starting migrations");
+      try {
+        // templates: ensure columns and index
+        const tcolsRows = await db.getAllAsync("PRAGMA table_info(templates);");
+        const tcols = tcolsRows.map((r) => r.name);
+        log("initDb: templates columns:", tcols);
+        if (!tcols.includes("name")) {
+          try {
+            await db.runAsync("ALTER TABLE templates ADD COLUMN name TEXT;");
+          } catch (e) {
+            warn("initDb: failed to add templates.name", e);
+          }
+        }
+        if (!tcols.includes("weeks")) {
+          try {
+            await db.runAsync(
+              "ALTER TABLE templates ADD COLUMN weeks INTEGER;"
             );
-          });
-        },
-        // If the base schema creation fails, reject and clear the cached promise
-        (err) => {
-          dbReadyPromise = null;
-          warn("initDb: base schema creation failed", err);
-          reject(err);
-        },
-        () => {
-          // 2) Lightweight migrations: add any missing required columns and indexes
-          log("initDb: starting migrations");
-          db.transaction(
-            (tx) => {
-              // templates must have name (unique) and weeks
-              tx.executeSql(
-                "PRAGMA table_info(templates);",
-                [],
-                (_, { rows }) => {
-                  const cols = rows._array.map((r) => r.name);
-                  log("initDb: templates columns:", cols);
-                  if (!cols.includes("name")) {
-                    tx.executeSql(
-                      "ALTER TABLE templates ADD COLUMN name TEXT;",
-                      [],
-                      () => log("initDb: added templates.name column"),
-                      (t, e) => {
-                        warn("initDb: failed to add templates.name", e);
-                        return true;
-                      }
-                    );
-                  }
-                  if (!cols.includes("weeks")) {
-                    tx.executeSql(
-                      "ALTER TABLE templates ADD COLUMN weeks INTEGER;",
-                      [],
-                      () => log("initDb: added templates.weeks column"),
-                      (t, e) => {
-                        warn("initDb: failed to add templates.weeks", e);
-                        return true;
-                      }
-                    );
-                  }
-                  // enforce uniqueness via index (works even if column added later)
-                  tx.executeSql(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_templates_name ON templates(name);",
-                    [],
-                    () =>
-                      log("initDb: ensured idx_templates_name unique index"),
-                    (t, e) => {
-                      warn("initDb: failed to ensure idx_templates_name", e);
-                      return true; // continue
-                    }
-                  );
-                  // Backfill missing/invalid weeks from existing weeks table
-                  tx.executeSql(
-                    `UPDATE templates
+          } catch (e) {
+            warn("initDb: failed to add templates.weeks", e);
+          }
+        }
+        try {
+          await db.runAsync(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_templates_name ON templates(name);"
+          );
+        } catch (e) {
+          warn("initDb: failed to ensure idx_templates_name", e);
+        }
+        try {
+          await db.runAsync(`UPDATE templates
                        SET weeks = (
                          SELECT COALESCE(MAX(week), 0)
                            FROM weeks w
                           WHERE w.template_id = templates.id
                        )
-                     WHERE weeks IS NULL OR weeks < 0;`,
-                    [],
-                    () =>
-                      log(
-                        "initDb: backfilled templates.weeks where null/invalid"
-                      ),
-                    (t, e) => {
-                      warn("initDb: backfill weeks failed", e);
-                      return true;
-                    }
-                  );
-                }
-              );
+                     WHERE weeks IS NULL OR weeks < 0;`);
+        } catch (e) {
+          warn("initDb: backfill weeks failed", e);
+        }
 
-              // weeks table may need to be created if older DB
-              tx.executeSql(
-                `CREATE TABLE IF NOT EXISTS weeks (
+        // weeks table existence
+        try {
+          await db.runAsync(`CREATE TABLE IF NOT EXISTS weeks (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   template_id INTEGER NOT NULL,
                   week INTEGER NOT NULL,
                   completed INTEGER NOT NULL DEFAULT 0,
                   UNIQUE(template_id, week),
                   FOREIGN KEY(template_id) REFERENCES templates(id) ON DELETE CASCADE
-                );`,
-                [],
-                () => log("initDb: ensured weeks (migration)"),
-                (t, e) => {
-                  warn("initDb: ensure weeks (migration) failed", e);
-                  return true;
-                }
-              );
-
-              // exercises must have name, sets, reps, weight, notes
-              tx.executeSql(
-                "PRAGMA table_info(exercises);",
-                [],
-                (_, { rows }) => {
-                  const cols = rows._array.map((r) => r.name);
-                  log("initDb: exercises columns:", cols);
-                  if (!cols.includes("name"))
-                    tx.executeSql(
-                      "ALTER TABLE exercises ADD COLUMN name TEXT;",
-                      [],
-                      () => log("initDb: added exercises.name"),
-                      (t, e) => {
-                        warn("initDb: failed to add exercises.name", e);
-                        return true;
-                      }
-                    );
-                  if (!cols.includes("sets"))
-                    tx.executeSql(
-                      "ALTER TABLE exercises ADD COLUMN sets INTEGER;",
-                      [],
-                      () => log("initDb: added exercises.sets"),
-                      (t, e) => {
-                        warn("initDb: failed to add exercises.sets", e);
-                        return true;
-                      }
-                    );
-                  if (!cols.includes("reps"))
-                    tx.executeSql(
-                      "ALTER TABLE exercises ADD COLUMN reps INTEGER;",
-                      [],
-                      () => log("initDb: added exercises.reps"),
-                      (t, e) => {
-                        warn("initDb: failed to add exercises.reps", e);
-                        return true;
-                      }
-                    );
-                  if (!cols.includes("weight"))
-                    tx.executeSql(
-                      "ALTER TABLE exercises ADD COLUMN weight REAL;",
-                      [],
-                      () => log("initDb: added exercises.weight"),
-                      (t, e) => {
-                        warn("initDb: failed to add exercises.weight", e);
-                        return true;
-                      }
-                    );
-                  if (!cols.includes("notes"))
-                    tx.executeSql(
-                      "ALTER TABLE exercises ADD COLUMN notes TEXT;",
-                      [],
-                      () => log("initDb: added exercises.notes"),
-                      (t, e) => {
-                        warn("initDb: failed to add exercises.notes", e);
-                        return true;
-                      }
-                    );
-                }
-              );
-
-              // days may need a completed column
-              tx.executeSql("PRAGMA table_info(days);", [], (_, { rows }) => {
-                const cols = rows._array.map((r) => r.name);
-                log("initDb: days columns:", cols);
-                if (!cols.includes("completed"))
-                  tx.executeSql(
-                    "ALTER TABLE days ADD COLUMN completed INTEGER NOT NULL DEFAULT 0;",
-                    [],
-                    () => log("initDb: added days.completed"),
-                    (t, e) => {
-                      warn("initDb: failed to add days.completed", e);
-                      return true;
-                    }
-                  );
-              });
-            },
-            // If a migration step fails, still resolve because base schema exists
-            (err) => {
-              warn("initDb: migration phase had errors", err);
-              resolve();
-            },
-            () => {
-              log("initDb: ready");
-              resolve();
-            }
-          );
+                );`);
+          log("initDb: ensured weeks (migration)");
+        } catch (e) {
+          warn("initDb: ensure weeks (migration) failed", e);
         }
-      );
-    });
+
+        // exercises columns
+        const ecolsRows = await db.getAllAsync("PRAGMA table_info(exercises);");
+        const ecols = ecolsRows.map((r) => r.name);
+        log("initDb: exercises columns:", ecols);
+        if (!ecols.includes("name")) {
+          try {
+            await db.runAsync("ALTER TABLE exercises ADD COLUMN name TEXT;");
+          } catch (e) {
+            warn("initDb: failed to add exercises.name", e);
+          }
+        }
+        if (!ecols.includes("sets")) {
+          try {
+            await db.runAsync("ALTER TABLE exercises ADD COLUMN sets INTEGER;");
+          } catch (e) {
+            warn("initDb: failed to add exercises.sets", e);
+          }
+        }
+        if (!ecols.includes("reps")) {
+          try {
+            await db.runAsync("ALTER TABLE exercises ADD COLUMN reps INTEGER;");
+          } catch (e) {
+            warn("initDb: failed to add exercises.reps", e);
+          }
+        }
+        if (!ecols.includes("weight")) {
+          try {
+            await db.runAsync("ALTER TABLE exercises ADD COLUMN weight REAL;");
+          } catch (e) {
+            warn("initDb: failed to add exercises.weight", e);
+          }
+        }
+        if (!ecols.includes("notes")) {
+          try {
+            await db.runAsync("ALTER TABLE exercises ADD COLUMN notes TEXT;");
+          } catch (e) {
+            warn("initDb: failed to add exercises.notes", e);
+          }
+        }
+
+        // days column
+        const dcolsRows = await db.getAllAsync("PRAGMA table_info(days);");
+        const dcols = dcolsRows.map((r) => r.name);
+        log("initDb: days columns:", dcols);
+        if (!dcols.includes("completed")) {
+          try {
+            await db.runAsync(
+              "ALTER TABLE days ADD COLUMN completed INTEGER NOT NULL DEFAULT 0;"
+            );
+          } catch (e) {
+            warn("initDb: failed to add days.completed", e);
+          }
+        }
+      } catch (err) {
+        warn("initDb: migration phase had errors", err);
+      }
+
+      log("initDb: ready");
+    })();
   }
   return dbReadyPromise;
 }
@@ -321,56 +242,52 @@ export function waitForDbReady() {
   return initDb();
 }
 
-// Kick off initialization early on module load (best-effort, errors handled by callers awaiting initDb)
-// This helps avoid races when a caller forgets to await initDb explicitly.
+// Kick off initialization early on module load
 initDb();
 
 // Template CRUD
-export function createTemplate(name, weeks) {
-  return initDb().then(async () => {
-    const trimmed = name.trim();
-    log("createTemplate: attempting", { name: trimmed, weeks });
-    // Pre-check for uniqueness without throwing on query errors
-    const existing = await queryFirst(
-      "SELECT id FROM templates WHERE name = ? LIMIT 1;",
-      [trimmed]
-    ).catch((e) => {
-      // If the pre-check query fails (older DB), continue and let the DB enforce uniqueness
-      warn("createTemplate: pre-check query error (continuing)", e);
-      return null;
-    });
-    if (existing) {
-      warn("createTemplate: duplicate name blocked", { name: trimmed });
-      throw new Error("Template name must be unique.");
-    }
-    try {
-      const res = await exec(
-        "INSERT INTO templates (name, weeks) VALUES (?, ?);",
-        [trimmed, weeks]
-      );
-      log("createTemplate: inserted", res?.insertId);
-      return res?.insertId;
-    } catch (err) {
-      warn("createTemplate: insert failed", err);
-      throw new Error("Template name must be unique.");
-    }
+export async function createTemplate(name, weeks) {
+  await initDb();
+  const trimmed = name.trim();
+  log("createTemplate: attempting", { name: trimmed, weeks });
+  const existing = await queryFirst(
+    "SELECT id FROM templates WHERE name = ? LIMIT 1;",
+    [trimmed]
+  ).catch((e) => {
+    warn("createTemplate: pre-check query error (continuing)", e);
+    return null;
   });
+  if (existing) {
+    warn("createTemplate: duplicate name blocked", { name: trimmed });
+    throw new Error("Template name must be unique.");
+  }
+  try {
+    const res = await exec(
+      "INSERT INTO templates (name, weeks) VALUES (?, ?);",
+      [trimmed, weeks]
+    );
+    log("createTemplate: inserted", res?.lastInsertRowId);
+    return res?.lastInsertRowId;
+  } catch (err) {
+    warn("createTemplate: insert failed", err);
+    throw new Error("Template name must be unique.");
+  }
 }
 
-export function getTemplates() {
-  return initDb().then(() =>
-    queryAll("SELECT id, name, weeks FROM templates ORDER BY id DESC;")
-  );
+export async function getTemplates() {
+  await initDb();
+  return queryAll("SELECT id, name, weeks FROM templates ORDER BY id DESC;");
 }
 
-export function deleteTemplate(id) {
-  return initDb().then(() =>
-    exec("DELETE FROM templates WHERE id = ?;", [id]).then(() => {})
-  );
+export async function deleteTemplate(id) {
+  await initDb();
+  await exec("DELETE FROM templates WHERE id = ?;", [id]);
 }
 
 // Ensure all 7 days rows exist for a week when viewing it
-export function ensureWeekDays(templateId, weekNumber) {
+export async function ensureWeekDays(templateId, weekNumber) {
+  await initDb();
+  log("ensureWeekDays: seeding", { templateId, weekNumber });
   const stmts = [
     [
       "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, 0);",
@@ -381,16 +298,12 @@ export function ensureWeekDays(templateId, weekNumber) {
       [templateId, weekNumber, i + 1],
     ]),
   ];
-  return initDb().then(() => {
-    log("ensureWeekDays: seeding", { templateId, weekNumber });
-    return execBatch(stmts).then(() => {
-      log("ensureWeekDays: done", { templateId, weekNumber });
-    });
-  });
+  await execBatch(stmts);
+  log("ensureWeekDays: done", { templateId, weekNumber });
 }
 
-export function listWeeks(templateId) {
-  // Return progress per week: week number, daysCompleted, weekCompleted
+export async function listWeeks(templateId) {
+  await initDb();
   const sql = `WITH t AS (
                  SELECT COALESCE(weeks, 0) AS weeks FROM templates WHERE id = ?
                ),
@@ -412,33 +325,31 @@ export function listWeeks(templateId) {
                FROM seq s
                LEFT JOIN weeks wk ON wk.template_id = ? AND wk.week = s.week
                ORDER BY s.week ASC;`;
-  return initDb().then(() => {
-    log("listWeeks: start", { templateId });
-    return queryAll(sql, [templateId, templateId, templateId, templateId]).then(
-      (rows) => {
-        log("listWeeks: rows", rows.length);
-        return rows;
-      }
-    );
-  });
+  log("listWeeks: start", { templateId });
+  const rows = await queryAll(sql, [
+    templateId,
+    templateId,
+    templateId,
+    templateId,
+  ]);
+  log("listWeeks: rows", rows.length);
+  return rows;
 }
 
-export function getExercises(templateId, week, day) {
+export async function getExercises(templateId, week, day) {
+  await initDb();
   const sql = `SELECT id, template_id, week, day, name, sets, reps, weight, notes,
                       (COALESCE(sets,0) * COALESCE(reps,0) * COALESCE(weight,0)) AS volume
                  FROM exercises
                 WHERE template_id = ? AND week = ? AND day = ?
                 ORDER BY id ASC;`;
-  return initDb().then(() => {
-    log("getExercises: start", { templateId, week, day });
-    return queryAll(sql, [templateId, week, day]).then((rows) => {
-      log("getExercises: rows", rows.length);
-      return rows;
-    });
-  });
+  log("getExercises: start", { templateId, week, day });
+  const rows = await queryAll(sql, [templateId, week, day]);
+  log("getExercises: rows", rows.length);
+  return rows;
 }
 
-export function addExercise({
+export async function addExercise({
   templateId,
   week,
   day,
@@ -448,130 +359,110 @@ export function addExercise({
   weight,
   notes,
 }) {
-  return initDb().then(async () => {
-    log("addExercise: inserting", { templateId, week, day, name });
-    const res = await exec(
-      "INSERT INTO exercises (template_id, week, day, name, sets, reps, weight, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
-      [
-        templateId,
-        week,
-        day,
-        name.trim(),
-        sets ?? null,
-        reps ?? null,
-        weight ?? null,
-        notes ?? null,
-      ]
-    );
-    log("addExercise: inserted", res?.insertId);
-    return res?.insertId;
-  });
+  await initDb();
+  log("addExercise: inserting", { templateId, week, day, name });
+  const res = await exec(
+    "INSERT INTO exercises (template_id, week, day, name, sets, reps, weight, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+    [
+      templateId,
+      week,
+      day,
+      name.trim(),
+      sets ?? null,
+      reps ?? null,
+      weight ?? null,
+      notes ?? null,
+    ]
+  );
+  log("addExercise: inserted", res?.lastInsertRowId);
+  return res?.lastInsertRowId;
 }
 
-export function deleteExercise(id) {
-  return initDb().then(() => {
-    log("deleteExercise: deleting", { id });
-    return exec("DELETE FROM exercises WHERE id = ?;", [id]).then(() => {
-      log("deleteExercise: done", { id });
-    });
-  });
+export async function deleteExercise(id) {
+  await initDb();
+  log("deleteExercise: deleting", { id });
+  await exec("DELETE FROM exercises WHERE id = ?;", [id]);
+  log("deleteExercise: done", { id });
 }
 
 // Day completion helpers
-export function getDayCompleted(templateId, week, day) {
-  return initDb().then(() =>
-    queryFirst(
-      "SELECT completed FROM days WHERE template_id = ? AND week = ? AND day = ?;",
-      [templateId, week, day]
-    ).then((row) => {
-      const completed = !!row?.completed;
-      log("getDayCompleted: result", { templateId, week, day, completed });
-      return completed;
-    })
+export async function getDayCompleted(templateId, week, day) {
+  await initDb();
+  const row = await queryFirst(
+    "SELECT completed FROM days WHERE template_id = ? AND week = ? AND day = ?;",
+    [templateId, week, day]
   );
+  const completed = !!row?.completed;
+  log("getDayCompleted: result", { templateId, week, day, completed });
+  return completed;
 }
 
-export function setDayCompleted(templateId, week, day, completed) {
-  return initDb().then(
-    () =>
-      new Promise((resolve, reject) => {
-        log("setDayCompleted: updating", { templateId, week, day, completed });
-        db.transaction(
-          (tx) => {
-            tx.executeSql(
-              "UPDATE days SET completed = ? WHERE template_id = ? AND week = ? AND day = ?;",
-              [completed ? 1 : 0, templateId, week, day]
-            );
-            // If all 7 days completed, auto-mark the week complete
-            tx.executeSql(
-              `SELECT COUNT(1) AS done FROM days WHERE template_id = ? AND week = ? AND completed = 1;`,
-              [templateId, week],
-              (_, { rows }) => {
-                const done = rows._array[0]?.done || 0;
-                if (done === 7) {
-                  log("setDayCompleted: all 7 days complete, marking week", {
-                    templateId,
-                    week,
-                  });
-                  tx.executeSql(
-                    "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, 0);",
-                    [templateId, week]
-                  );
-                  tx.executeSql(
-                    "UPDATE weeks SET completed = 1 WHERE template_id = ? AND week = ?;",
-                    [templateId, week]
-                  );
-                }
-              }
-            );
-          },
-          (err) => {
-            reject(err);
-          },
-          () => {
-            log("setDayCompleted: done", { templateId, week, day, completed });
-            resolve();
-          }
-        );
-      })
-  );
+export async function setDayCompleted(templateId, week, day, completed) {
+  await initDb();
+  const db = await getDb();
+  log("setDayCompleted: updating", { templateId, week, day, completed });
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      "UPDATE days SET completed = ? WHERE template_id = ? AND week = ? AND day = ?;",
+      [completed ? 1 : 0, templateId, week, day]
+    );
+    const rows = await db.getAllAsync(
+      `SELECT COUNT(1) AS done FROM days WHERE template_id = ? AND week = ? AND completed = 1;`,
+      [templateId, week]
+    );
+    const done = rows?.[0]?.done || 0;
+    if (done === 7) {
+      log("setDayCompleted: all 7 days complete, marking week", {
+        templateId,
+        week,
+      });
+      await db.runAsync(
+        "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, 0);",
+        [templateId, week]
+      );
+      await db.runAsync(
+        "UPDATE weeks SET completed = 1 WHERE template_id = ? AND week = ?;",
+        [templateId, week]
+      );
+    }
+  });
+  log("setDayCompleted: done", { templateId, week, day, completed });
 }
 
 // Week completion helpers
-export function getWeekStatus(templateId, week) {
+export async function getWeekStatus(templateId, week) {
+  await initDb();
   const sql = `SELECT COALESCE(w.completed, 0) AS completed,
                 (SELECT COUNT(1) FROM days d WHERE d.template_id = ? AND d.week = ? AND d.completed = 1) AS daysCompleted
            FROM (SELECT 1) x
       LEFT JOIN weeks w ON w.template_id = ? AND w.week = ?;`;
-  return initDb().then(() =>
-    queryFirst(sql, [templateId, week, templateId, week]).then((r) => {
-      const result = {
-        completed: !!(r?.completed || 0),
-        daysCompleted: r?.daysCompleted || 0,
-      };
-      log("getWeekStatus: result", { templateId, week, ...result });
-      return result;
-    })
-  );
+  const r = await queryFirst(sql, [templateId, week, templateId, week]);
+  const result = {
+    completed: !!(r?.completed || 0),
+    daysCompleted: r?.daysCompleted || 0,
+  };
+  log("getWeekStatus: result", { templateId, week, ...result });
+  return result;
 }
 
-export function setWeekStatus(templateId, week, completed) {
-  return initDb().then(() => {
-    log("setWeekStatus: updating", { templateId, week, completed });
-    return execBatch([
-      [
-        "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, 0);",
-        [templateId, week],
-      ],
-      [
-        "UPDATE weeks SET completed = ? WHERE template_id = ? AND week = ?;",
-        [completed ? 1 : 0, templateId, week],
-      ],
-    ]).then(() => log("setWeekStatus: done", { templateId, week, completed }));
-  });
+export async function setWeekStatus(templateId, week, completed) {
+  await initDb();
+  log("setWeekStatus: updating", { templateId, week, completed });
+  await execBatch([
+    [
+      "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, 0);",
+      [templateId, week],
+    ],
+    [
+      "UPDATE weeks SET completed = ? WHERE template_id = ? AND week = ?;",
+      [completed ? 1 : 0, templateId, week],
+    ],
+  ]);
+  log("setWeekStatus: done", { templateId, week, completed });
 }
 
-export function updateExercise({ id, name, sets, reps, weight, notes }) {
+export async function updateExercise({ id, name, sets, reps, weight, notes }) {
+  await initDb();
   const sql = `UPDATE exercises
             SET name = ?,
                 sets = ?,
@@ -587,13 +478,10 @@ export function updateExercise({ id, name, sets, reps, weight, notes }) {
     notes ?? null,
     id,
   ];
-  return initDb().then(() => {
-    log("updateExercise: updating", { id, name });
-    return exec(sql, params).then((r) => {
-      log("updateExercise: rowsAffected", r.rowsAffected ?? 0);
-      return r.rowsAffected;
-    });
-  });
+  log("updateExercise: updating", { id, name });
+  const r = await exec(sql, params);
+  log("updateExercise: changes", r?.changes ?? 0);
+  return r?.changes ?? 0;
 }
 
 // Danger: Reset DB by dropping all tables and re-initializing schema
@@ -607,7 +495,7 @@ export function resetDb() {
       warn("resetDb: could not disable foreign_keys (continuing)", e);
     }
 
-    // Drop objects individually; ignore failures to keep progress moving
+    // Drop objects individually; ignore failures
     const drop = async (sql) => {
       try {
         await exec(sql);
@@ -658,65 +546,45 @@ export function resetDb() {
 }
 
 // Copy all exercises (names only) from a source week to one or more destination weeks
-// - Runs in a single transaction to avoid race conditions
-// - Seeds destination weeks/days
-// - Clears existing exercises in destination weeks before copying
-export function copyWeekExercises(templateId, sourceWeek, destWeeks = []) {
-  if (!Array.isArray(destWeeks) || destWeeks.length === 0)
-    return Promise.resolve();
-  return initDb().then(
-    () =>
-      new Promise((resolve, reject) => {
-        log("copyWeekExercises: begin", { templateId, sourceWeek, destWeeks });
-        db.transaction(
-          (tx) => {
-            for (const dw of destWeeks) {
-              if (dw === sourceWeek) continue;
-              // Ensure week row and 7 day rows
-              tx.executeSql(
-                "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, 0);",
-                [templateId, dw]
-              );
-              for (let d = 1; d <= 7; d++) {
-                tx.executeSql(
-                  "INSERT OR IGNORE INTO days (template_id, week, day, completed) VALUES (?, ?, ?, 0);",
-                  [templateId, dw, d]
-                );
-              }
-              // Clear any existing exercises in destination week
-              tx.executeSql(
-                "DELETE FROM exercises WHERE template_id = ? AND week = ?;",
-                [templateId, dw]
-              );
-              // Copy names only for all days from source week to destination week
-              tx.executeSql(
-                `INSERT INTO exercises (template_id, week, day, name, sets, reps, weight, notes)
+export async function copyWeekExercises(
+  templateId,
+  sourceWeek,
+  destWeeks = []
+) {
+  if (!Array.isArray(destWeeks) || destWeeks.length === 0) return;
+  await initDb();
+  const db = await getDb();
+  log("copyWeekExercises: begin", { templateId, sourceWeek, destWeeks });
+  await db.withTransactionAsync(async () => {
+    for (const dw of destWeeks) {
+      if (dw === sourceWeek) continue;
+      await db.runAsync(
+        "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, 0);",
+        [templateId, dw]
+      );
+      for (let d = 1; d <= 7; d++) {
+        await db.runAsync(
+          "INSERT OR IGNORE INTO days (template_id, week, day, completed) VALUES (?, ?, ?, 0);",
+          [templateId, dw, d]
+        );
+      }
+      await db.runAsync(
+        "DELETE FROM exercises WHERE template_id = ? AND week = ?;",
+        [templateId, dw]
+      );
+      await db.runAsync(
+        `INSERT INTO exercises (template_id, week, day, name, sets, reps, weight, notes)
                    SELECT ?, ?, day, name, NULL, NULL, NULL, NULL
                      FROM exercises
                     WHERE template_id = ? AND week = ?;`,
-                [templateId, dw, templateId, sourceWeek]
-              );
-            }
-          },
-          (err) => {
-            warn("copyWeekExercises: failed", err);
-            reject(err);
-          },
-          () => {
-            log("copyWeekExercises: done", {
-              templateId,
-              sourceWeek,
-              destWeeks,
-            });
-            resolve();
-          }
-        );
-      })
-  );
+        [templateId, dw, templateId, sourceWeek]
+      );
+    }
+  });
+  log("copyWeekExercises: done", { templateId, sourceWeek, destWeeks });
 }
 
 // -------- Import/Export (JSON) --------
-// Export format metadata
 const EXPORT_FORMAT = "traintrack.v1";
 
 async function getTemplateDeep(templateId) {
@@ -761,216 +629,141 @@ export async function exportTemplatesJson(templateIds = null) {
   const templates = [];
   for (const id of ids) {
     const obj = await getTemplateDeep(id);
-    if (obj) templates.push(obj);
+    if (!obj) continue;
+    templates.push({
+      name: obj.name,
+      weeks: obj.weeks,
+      weeksTable: obj.weeksTable || [],
+      days: obj.days || [],
+      exercises: obj.exercises || [],
+    });
   }
   return {
-    format: EXPORT_FORMAT,
+    type: EXPORT_FORMAT,
     exportedAt: new Date().toISOString(),
-    count: templates.length,
     templates,
   };
 }
 
-// Import templates from JSON string or object produced by exportTemplatesJson
-export async function importTemplatesJson(jsonOrObject) {
+// Import a single template object (from export) under a specific unique name
+export async function importTemplateObjectWithName(tpl, newName) {
   await initDb();
-  const payload =
-    typeof jsonOrObject === "string" ? JSON.parse(jsonOrObject) : jsonOrObject;
-  if (
-    !payload ||
-    payload.format !== EXPORT_FORMAT ||
-    !Array.isArray(payload.templates)
-  ) {
-    throw new Error("Invalid import file");
-  }
+  const db = await getDb();
+  const name = (newName || "").trim();
+  if (!name) throw new Error("Template name required");
 
-  const results = [];
-  for (const tpl of payload.templates) {
-    const baseName = (tpl.name || "Imported Template").trim();
-    let nameToUse = baseName;
-    let attempt = 1;
-    // Ensure unique name by appending suffixes if needed
-    while (true) {
-      const existing = await queryFirst(
-        "SELECT id FROM templates WHERE name = ?;",
-        [nameToUse]
-      ).catch(() => null);
-      if (!existing) break;
-      attempt += 1;
-      nameToUse = `${baseName} (import ${attempt})`;
+  // Check uniqueness
+  const exists = await queryFirst(
+    "SELECT id FROM templates WHERE name = ? LIMIT 1;",
+    [name]
+  );
+  if (exists) throw new Error("Template name must be unique.");
+
+  const toNullableNumber = (v) => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const arrMax = (arr, key) => {
+    if (!Array.isArray(arr) || arr.length === 0) return 0;
+    return arr.reduce((m, it) => {
+      const v = Number(it?.[key] ?? 0);
+      return Number.isFinite(v) ? Math.max(m, v) : m;
+    }, 0);
+  };
+
+  const sourceWeeks = Number.isFinite(Number(tpl?.weeks))
+    ? Number(tpl.weeks)
+    : 0;
+  const maxWeek = Math.max(
+    sourceWeeks,
+    arrMax(tpl?.weeksTable, "week"),
+    arrMax(tpl?.days, "week"),
+    arrMax(tpl?.exercises, "week")
+  );
+  const weeksCount = maxWeek > 0 ? maxWeek : sourceWeeks || 0;
+
+  let info = null;
+  await db.withTransactionAsync(async () => {
+    // Create template
+    const ins = await db.runAsync(
+      "INSERT INTO templates (name, weeks) VALUES (?, ?);",
+      [name, weeksCount || null]
+    );
+    const templateId = ins?.lastInsertRowId;
+
+    // Seed weeks + days
+    const weekCompletedMap = new Map();
+    if (Array.isArray(tpl?.weeksTable)) {
+      for (const w of tpl.weeksTable) {
+        const wk = Number(w?.week);
+        if (Number.isFinite(wk)) {
+          weekCompletedMap.set(wk, w?.completed ? 1 : 0);
+        }
+      }
     }
 
-    // Create template and then bulk insert dependent rows in a transaction
-    // Default weeks if not present
-    const totalWeeks = Number.isFinite(tpl.weeks) ? tpl.weeks : 0;
-    const res = await exec(
-      "INSERT INTO templates (name, weeks) VALUES (?, ?);",
-      [nameToUse, totalWeeks]
-    );
-    const newTemplateId = res?.insertId;
-
-    await new Promise((resolve, reject) => {
-      db.transaction(
-        (tx) => {
-          // Seed weeks table
-          if (Array.isArray(tpl.weeksTable)) {
-            for (const w of tpl.weeksTable) {
-              tx.executeSql(
-                "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, ?);",
-                [newTemplateId, w.week, w.completed ? 1 : 0]
-              );
-            }
-          }
-          // Seed 7 days rows where missing and set completion from import
-          if (Array.isArray(tpl.days) && tpl.days.length) {
-            for (const d of tpl.days) {
-              tx.executeSql(
-                "INSERT OR IGNORE INTO days (template_id, week, day, completed) VALUES (?, ?, ?, ?);",
-                [newTemplateId, d.week, d.day, d.completed ? 1 : 0]
-              );
-              tx.executeSql(
-                "UPDATE days SET completed = ? WHERE template_id = ? AND week = ? AND day = ?;",
-                [d.completed ? 1 : 0, newTemplateId, d.week, d.day]
-              );
-            }
-          } else if (totalWeeks > 0) {
-            // If days not provided, at least ensure 7 days per week exist
-            for (let w = 1; w <= totalWeeks; w++) {
-              tx.executeSql(
-                "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, 0);",
-                [newTemplateId, w]
-              );
-              for (let d = 1; d <= 7; d++) {
-                tx.executeSql(
-                  "INSERT OR IGNORE INTO days (template_id, week, day, completed) VALUES (?, ?, ?, 0);",
-                  [newTemplateId, w, d]
-                );
-              }
-            }
-          }
-          // Exercises
-          if (Array.isArray(tpl.exercises)) {
-            for (const ex of tpl.exercises) {
-              tx.executeSql(
-                "INSERT INTO exercises (template_id, week, day, name, sets, reps, weight, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
-                [
-                  newTemplateId,
-                  ex.week,
-                  ex.day,
-                  ex.name || null,
-                  ex.sets ?? null,
-                  ex.reps ?? null,
-                  ex.weight ?? null,
-                  ex.notes ?? null,
-                ]
-              );
-            }
-          }
-        },
-        (err) => reject(err),
-        () => resolve()
+    const totalWeeks = weeksCount > 0 ? weeksCount : 0;
+    for (let w = 1; w <= totalWeeks; w++) {
+      const completed = weekCompletedMap.has(w) ? weekCompletedMap.get(w) : 0;
+      await db.runAsync(
+        "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, ?);",
+        [templateId, w, completed]
       );
-    });
+      if (weekCompletedMap.has(w)) {
+        await db.runAsync(
+          "UPDATE weeks SET completed = ? WHERE template_id = ? AND week = ?;",
+          [completed, templateId, w]
+        );
+      }
+      // Seed days 1..7
+      for (let d = 1; d <= 7; d++) {
+        await db.runAsync(
+          "INSERT OR IGNORE INTO days (template_id, week, day, completed) VALUES (?, ?, ?, 0);",
+          [templateId, w, d]
+        );
+      }
+    }
 
-    results.push({ name: nameToUse, id: newTemplateId });
-  }
+    // Apply day completion states from source
+    if (Array.isArray(tpl?.days)) {
+      for (const d of tpl.days) {
+        const wk = Number(d?.week);
+        const dy = Number(d?.day);
+        if (!Number.isFinite(wk) || !Number.isFinite(dy)) continue;
+        const completed = d?.completed ? 1 : 0;
+        await db.runAsync(
+          "UPDATE days SET completed = ? WHERE template_id = ? AND week = ? AND day = ?;",
+          [completed, templateId, wk, dy]
+        );
+      }
+    }
 
-  return { imported: results.length, templates: results };
-}
+    // Insert exercises
+    if (Array.isArray(tpl?.exercises)) {
+      for (const ex of tpl.exercises) {
+        const wk = Number(ex?.week);
+        const dy = Number(ex?.day);
+        if (!Number.isFinite(wk) || !Number.isFinite(dy)) continue;
+        await db.runAsync(
+          "INSERT INTO exercises (template_id, week, day, name, sets, reps, weight, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+          [
+            templateId,
+            wk,
+            dy,
+            (ex?.name || "").trim(),
+            toNullableNumber(ex?.sets),
+            toNullableNumber(ex?.reps),
+            toNullableNumber(ex?.weight),
+            ex?.notes ?? null,
+          ]
+        );
+      }
+    }
 
-// Import a single template object with a required unique name
-export async function importTemplateObjectWithName(templateObject, forcedName) {
-  await initDb();
-  if (!templateObject) throw new Error("Missing template data");
-  const baseName = (
-    forcedName ||
-    templateObject.name ||
-    "Imported Template"
-  ).trim();
-  if (!baseName) throw new Error("Name required");
-  // Enforce uniqueness strictly
-  const existing = await queryFirst(
-    "SELECT id FROM templates WHERE name = ?;",
-    [baseName]
-  ).catch(() => null);
-  if (existing) throw new Error("Template name must be unique.");
-
-  const totalWeeks = Number.isFinite(templateObject.weeks)
-    ? templateObject.weeks
-    : Array.isArray(templateObject.weeksTable)
-    ? templateObject.weeksTable.reduce((m, w) => Math.max(m, w.week || 0), 0)
-    : 0;
-
-  const res = await exec("INSERT INTO templates (name, weeks) VALUES (?, ?);", [
-    baseName,
-    totalWeeks,
-  ]);
-  const newTemplateId = res?.insertId;
-
-  await new Promise((resolve, reject) => {
-    db.transaction(
-      (tx) => {
-        // Weeks
-        if (Array.isArray(templateObject.weeksTable)) {
-          for (const w of templateObject.weeksTable) {
-            if (!Number.isFinite(w.week)) continue;
-            tx.executeSql(
-              "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, ?);",
-              [newTemplateId, w.week, w.completed ? 1 : 0]
-            );
-          }
-        }
-        // Days
-        if (Array.isArray(templateObject.days) && templateObject.days.length) {
-          for (const d of templateObject.days) {
-            if (!Number.isFinite(d.week) || !Number.isFinite(d.day)) continue;
-            tx.executeSql(
-              "INSERT OR IGNORE INTO days (template_id, week, day, completed) VALUES (?, ?, ?, ?);",
-              [newTemplateId, d.week, d.day, d.completed ? 1 : 0]
-            );
-            tx.executeSql(
-              "UPDATE days SET completed = ? WHERE template_id = ? AND week = ? AND day = ?;",
-              [d.completed ? 1 : 0, newTemplateId, d.week, d.day]
-            );
-          }
-        } else if (totalWeeks > 0) {
-          for (let w = 1; w <= totalWeeks; w++) {
-            tx.executeSql(
-              "INSERT OR IGNORE INTO weeks (template_id, week, completed) VALUES (?, ?, 0);",
-              [newTemplateId, w]
-            );
-            for (let d = 1; d <= 7; d++) {
-              tx.executeSql(
-                "INSERT OR IGNORE INTO days (template_id, week, day, completed) VALUES (?, ?, ?, 0);",
-                [newTemplateId, w, d]
-              );
-            }
-          }
-        }
-        // Exercises
-        if (Array.isArray(templateObject.exercises)) {
-          for (const ex of templateObject.exercises) {
-            if (!Number.isFinite(ex.week) || !Number.isFinite(ex.day)) continue;
-            tx.executeSql(
-              "INSERT INTO exercises (template_id, week, day, name, sets, reps, weight, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
-              [
-                newTemplateId,
-                ex.week,
-                ex.day,
-                ex.name || null,
-                ex.sets ?? null,
-                ex.reps ?? null,
-                ex.weight ?? null,
-                ex.notes ?? null,
-              ]
-            );
-          }
-        }
-      },
-      (err) => reject(err),
-      () => resolve()
-    );
+    info = { id: templateId, name, weeks: weeksCount };
   });
 
-  return { id: newTemplateId, name: baseName };
+  return info;
 }
