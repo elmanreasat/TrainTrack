@@ -61,6 +61,7 @@ export default function TemplateListScreen({ navigation }) {
     json: "",
     busy: false,
   });
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const toggleSelect = (id) => {
     setSelectedIds((prev) => {
@@ -293,21 +294,10 @@ export default function TemplateListScreen({ navigation }) {
       </View>
 
       <Text style={styles.sectionTitle}>Templates</Text>
-      <FlatList
-        data={templates}
-        keyExtractor={(i) => String(i.id)}
-        refreshing={refreshing}
-        onRefresh={load}
-        renderItem={renderItem}
-        ListEmptyComponent={
-          <Text style={styles.emptyText}>No templates yet.</Text>
-        }
-        contentContainerStyle={{ paddingBottom: 24 }}
-      />
-
-      <View style={styles.footer}>
-        <View style={styles.rowButtons}>
-          {!selectMode ? (
+      {/* top actions: selection + import */}
+      <View style={styles.rowButtons}>
+        {!selectMode ? (
+          <>
             <TouchableOpacity
               style={styles.secondaryButton}
               onPress={() => setSelectMode(true)}
@@ -319,54 +309,6 @@ export default function TemplateListScreen({ navigation }) {
               />
               <Text style={styles.secondaryButtonText}>Select</Text>
             </TouchableOpacity>
-          ) : (
-            <>
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={selectAll}
-              >
-                <Ionicons name="checkbox-outline" size={18} color="#0a84ff" />
-                <Text style={styles.secondaryButtonText}>All</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={selectNone}
-              >
-                <Ionicons name="square-outline" size={18} color="#0a84ff" />
-                <Text style={styles.secondaryButtonText}>None</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={exportSelected}
-              >
-                <Ionicons
-                  name="cloud-download-outline"
-                  size={18}
-                  color="#0a84ff"
-                />
-                <Text style={styles.secondaryButtonText}>Export Selected</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={deleteSelected}
-              >
-                <Ionicons name="trash-outline" size={18} color="#cc0000" />
-                <Text
-                  style={[styles.secondaryButtonText, { color: "#cc0000" }]}
-                >
-                  Delete Selected
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={exitSelectMode}
-              >
-                <Ionicons name="close-outline" size={18} color="#0a84ff" />
-                <Text style={styles.secondaryButtonText}>Cancel</Text>
-              </TouchableOpacity>
-            </>
-          )}
-          {!selectMode && (
             <TouchableOpacity
               style={styles.secondaryButton}
               onPress={async () => {
@@ -380,7 +322,6 @@ export default function TemplateListScreen({ navigation }) {
                   const content = await FileSystem.readAsStringAsync(file.uri, {
                     encoding: FileSystem.EncodingType.UTF8,
                   });
-                  // Parse and let user choose which template and name
                   const parsed = JSON.parse(content);
                   if (!parsed?.templates?.length) {
                     Alert.alert("No templates in file");
@@ -421,7 +362,6 @@ export default function TemplateListScreen({ navigation }) {
                   if (parsed.templates.length === 1) {
                     startImport(parsed.templates[0]);
                   } else {
-                    // Enable multi-select import with editable names
                     const items = parsed.templates.map((t) => ({
                       tpl: t,
                       name: t.name || "Imported Template",
@@ -435,43 +375,124 @@ export default function TemplateListScreen({ navigation }) {
                 }
               }}
             >
-              <Ionicons name="cloud-upload-outline" size={18} color="#0a84ff" />
+              {/* swapped icon for Import to look like download */}
+              <Ionicons
+                name="cloud-download-outline"
+                size={18}
+                color="#0a84ff"
+              />
               <Text style={styles.secondaryButtonText}>Import</Text>
             </TouchableOpacity>
-          )}
-        </View>
+          </>
+        ) : (
+          <>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={selectAll}
+            >
+              <Ionicons name="checkbox-outline" size={18} color="#0a84ff" />
+              <Text style={styles.secondaryButtonText}>All</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={selectNone}
+            >
+              <Ionicons name="square-outline" size={18} color="#0a84ff" />
+              <Text style={styles.secondaryButtonText}>None</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={exportSelected}
+            >
+              {/* swapped icon for Export to look like upload */}
+              <Ionicons name="cloud-upload-outline" size={18} color="#0a84ff" />
+              <Text style={styles.secondaryButtonText}>Export Selected</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={deleteSelected}
+            >
+              <Ionicons name="trash-outline" size={18} color="#cc0000" />
+              <Text style={[styles.secondaryButtonText, { color: "#cc0000" }]}>
+                Delete Selected
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={exitSelectMode}
+            >
+              <Ionicons name="close-outline" size={18} color="#0a84ff" />
+              <Text style={styles.secondaryButtonText}>Cancel</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
+      <FlatList
+        data={templates}
+        keyExtractor={(i) => String(i.id)}
+        refreshing={refreshing}
+        onRefresh={load}
+        renderItem={renderItem}
+        ListEmptyComponent={
+          <Text style={styles.emptyText}>No templates yet.</Text>
+        }
+        contentContainerStyle={{ paddingBottom: 24 }}
+      />
+
+      <View style={styles.footer}>
+        {/* Advanced (collapsed) to hide reset from main UI */}
         <TouchableOpacity
-          style={styles.resetCard}
-          activeOpacity={0.85}
-          onPress={() =>
-            Alert.alert(
-              "Reset Database",
-              "This will delete ALL templates, weeks, days, and exercises.",
-              [
-                { text: "Cancel", style: "cancel" },
-                {
-                  text: "Reset",
-                  style: "destructive",
-                  onPress: async () => {
-                    await resetDb();
-                    await load();
-                  },
-                },
-              ]
-            )
-          }
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+            alignSelf: "flex-start",
+          }}
+          onPress={() => setAdvancedOpen((v) => !v)}
         >
-          <View style={styles.resetIconWrap}>
-            <Ionicons name="refresh-outline" size={20} color="#0a84ff" />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.resetTitle}>Reset Database</Text>
-            <Text style={styles.resetSubtitle}>
-              Clears all data and recreates the schema.
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color="#6b6b6b" />
+          <Ionicons
+            name={
+              advancedOpen ? "chevron-down-outline" : "chevron-forward-outline"
+            }
+            size={16}
+            color="#6b6b6b"
+          />
+          <Text style={{ color: "#6b6b6b" }}>Advanced</Text>
         </TouchableOpacity>
+        {advancedOpen && (
+          <TouchableOpacity
+            style={styles.resetCard}
+            activeOpacity={0.85}
+            onPress={() =>
+              Alert.alert(
+                "Reset Database",
+                "This will delete ALL templates, weeks, days, and exercises.",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Reset",
+                    style: "destructive",
+                    onPress: async () => {
+                      await resetDb();
+                      await load();
+                    },
+                  },
+                ]
+              )
+            }
+          >
+            <View style={styles.resetIconWrap}>
+              <Ionicons name="refresh-outline" size={20} color="#0a84ff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.resetTitle}>Reset Database</Text>
+              <Text style={styles.resetSubtitle}>
+                Clears all data and recreates the schema.
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#6b6b6b" />
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* name prompt modal */}
