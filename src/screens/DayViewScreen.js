@@ -594,8 +594,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#fafafa",
   },
-  saveButton: {},
-  deleteButton: {},
   swipeDeleteWrap: {
     width: 72,
     justifyContent: "center",
