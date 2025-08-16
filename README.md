@@ -17,7 +17,7 @@ Project structure
 
 Notes
 
-- Uses expo-sqlite/legacy per Expo 51 docs.
+- Uses expo-sqlite/legacy per Expo 53 docs.
 - Exercises are keyed by template_id + week + day. Multiple same-name exercises allowed.
 
 Try it
@@ -28,7 +28,7 @@ Try it
 Commands (PowerShell)
 
 ```powershell
-# from c:\workspace2\expo_app_3
 npm install
 npm run start
 ```
+
