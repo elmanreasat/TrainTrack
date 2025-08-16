@@ -222,12 +222,14 @@ export default function TemplateListScreen({ navigation }) {
           <TextInput
             style={styles.input}
             placeholder="Template name"
+            placeholderTextColor="#999"
             value={name}
             onChangeText={setName}
           />
           <TextInput
             style={[styles.input, styles.weeksInput]}
             placeholder="Weeks"
+            placeholderTextColor="#999"
             keyboardType="number-pad"
             value={weeks}
             onChangeText={setWeeks}
