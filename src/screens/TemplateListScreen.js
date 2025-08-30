@@ -273,20 +273,32 @@ export default function TemplateListScreen({ navigation }) {
       <View style={styles.createCard}>
         <Text style={styles.header}>Create Template</Text>
         <View style={styles.row}>
-          <TextInput
-            style={styles.input}
-            placeholder="Template name"
-            value={name}
-            onChangeText={setName}
-          />
-          <TextInput
-            style={[styles.input, styles.weeksInput]}
-            placeholder="Weeks"
-            keyboardType="number-pad"
-            value={weeks}
-            onChangeText={setWeeks}
-          />
-          <TouchableOpacity style={styles.addButton} onPress={onCreate}>
+          <View style={styles.fieldWrap}>
+            <TextInput
+              style={styles.input}
+              placeholder="Template name"
+              placeholderTextColor="#666"
+              value={name}
+              onChangeText={setName}
+            />
+          </View>
+          <View style={[styles.fieldWrap, { maxWidth: 90 }]}>
+            <TextInput
+              style={styles.input}
+              placeholder="Weeks"
+              placeholderTextColor="#666"
+              keyboardType="number-pad"
+              value={weeks}
+              onChangeText={setWeeks}
+            />
+          </View>
+          <TouchableOpacity
+            style={[
+              styles.addButton,
+              { alignSelf: "flex-end", marginBottom: 2 },
+            ]}
+            onPress={onCreate}
+          >
             <Ionicons name="add" size={20} color="#fff" />
           </TouchableOpacity>
         </View>
@@ -699,7 +711,16 @@ function ExportDestinationModal({ state, setState }) {
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 16, backgroundColor: "#f7f7f7" },
   header: { fontSize: 16, fontWeight: "600", marginBottom: 8 },
-  row: { flexDirection: "row", gap: 8, alignItems: "center" },
+  row: { flexDirection: "row", gap: 8, alignItems: "flex-start" },
+  fieldWrap: { flex: 1 },
+  fieldLabel: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: "#555",
+    marginBottom: 4,
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
   input: {
     flex: 1,
     borderWidth: 1,
