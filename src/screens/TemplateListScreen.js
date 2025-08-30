@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -16,8 +16,8 @@ import {
   getTemplates,
   deleteTemplate,
   resetDb,
-  exportTemplatesJson, 
-  importTemplateObjectWithName, 
+  exportTemplatesJson,
+  importTemplateObjectWithName,
 } from "../db/db";
 import * as FileSystem from "expo-file-system";
 import * as Sharing from "expo-sharing";
@@ -129,20 +129,51 @@ export default function TemplateListScreen({ navigation }) {
     );
   };
 
-  const load = async () => {
-    setRefreshing(true);
-    try {
-      const data = await getTemplates();
-      setTemplates(data);
-    } catch (e) {
-      console.warn(e);
-    } finally {
-      setRefreshing(false);
-    }
-  };
+  const load = useCallback(
+    async (opts = { showSpinner: false }) => {
+      if (opts.showSpinner) setRefreshing(true);
+      try {
+        const data = await getTemplates();
+        // Diff: only update list if ids/order or relevant fields changed
+        let changed = false;
+        if (data.length !== templates.length) changed = true;
+        if (!changed) {
+          for (let i = 0; i < data.length; i++) {
+            const a = data[i];
+            const b = templates[i];
+            if (
+              !b ||
+              a.id !== b.id ||
+              a.name !== b.name ||
+              a.weeks !== b.weeks
+            ) {
+              changed = true;
+              break;
+            }
+          }
+        }
+        if (changed) {
+          // Preserve object references for unchanged rows to avoid re-mount bounce
+          const prevMap = new Map(templates.map((t) => [t.id, t]));
+          const merged = data.map((d) => {
+            const old = prevMap.get(d.id);
+            if (!old) return d; // new template
+            if (old.name === d.name && old.weeks === d.weeks) return old; // reuse reference
+            return { ...old, name: d.name, weeks: d.weeks }; // minimally mutate
+          });
+          setTemplates(merged);
+        }
+      } catch (e) {
+        console.warn(e);
+      } finally {
+        if (opts.showSpinner) setRefreshing(false);
+      }
+    },
+    [templates]
+  );
 
   useEffect(() => {
-    const unsub = navigation.addListener("focus", load);
+    const unsub = navigation.addListener("focus", () => load());
     // Remove any headerRight reset; reset control is now in the footer card
     navigation.setOptions({ headerRight: undefined, title: "Your Training" });
     return unsub;
@@ -222,14 +253,12 @@ export default function TemplateListScreen({ navigation }) {
           <TextInput
             style={styles.input}
             placeholder="Template name"
-            placeholderTextColor="#999"
             value={name}
             onChangeText={setName}
           />
           <TextInput
             style={[styles.input, styles.weeksInput]}
             placeholder="Weeks"
-            placeholderTextColor="#999"
             keyboardType="number-pad"
             value={weeks}
             onChangeText={setWeeks}
@@ -378,7 +407,7 @@ export default function TemplateListScreen({ navigation }) {
         data={templates}
         keyExtractor={(i) => String(i.id)}
         refreshing={refreshing}
-        onRefresh={load}
+        onRefresh={() => load({ showSpinner: true })}
         renderItem={renderItem}
         ListEmptyComponent={
           <Text style={styles.emptyText}>No templates yet.</Text>
