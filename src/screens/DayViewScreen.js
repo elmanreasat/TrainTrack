@@ -13,17 +13,13 @@ import {
   ScrollView,
 } from "react-native";
 import { Swipeable } from "react-native-gesture-handler";
-import Animated, {
-  Layout,
-  FadeIn,
-  SlideOutLeft,
-} from "react-native-reanimated";
+// Removed reanimated list animations to stop bounce on refresh
 import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
 import {
   getExercises,
   deleteExercise,
-  updateExercise,
+  updateExerciseWithSets,
   getDayCompleted,
   setDayCompleted,
 } from "../db/db";
@@ -38,72 +34,132 @@ const ExerciseCard = React.memo(function ExerciseCard({
   onToggleSelect,
 }) {
   const [name, setName] = React.useState(exercise.name || "");
-  const [sets, setSets] = React.useState(
-    exercise.sets ? String(exercise.sets) : ""
-  );
-  const [reps, setReps] = React.useState(
-    exercise.reps ? String(exercise.reps) : ""
-  );
-  const [weight, setWeight] = React.useState(
-    exercise.weight ? String(exercise.weight) : ""
-  );
   const [notes, setNotes] = React.useState(exercise.notes || "");
+  const [setRows, setSetRows] = React.useState(
+    exercise.setRows && exercise.setRows.length
+      ? exercise.setRows.map((r) => ({
+          reps: r.reps != null ? String(r.reps) : "",
+          weight: r.weight != null ? String(r.weight) : "",
+        }))
+      : [
+          {
+            reps: exercise.reps != null ? String(exercise.reps) : "",
+            weight: exercise.weight != null ? String(exercise.weight) : "",
+          },
+        ]
+  );
   const saveTimer = React.useRef(null);
+  const lastSnapshotRef = React.useRef(null);
 
-  const vol = (Number(sets) || 0) * (Number(reps) || 0) * (Number(weight) || 0);
-
-  // Debounced auto-save when fields change (disabled during select mode)
+  // If the exercise id changes (shouldn't often), reset local state
   React.useEffect(() => {
-    // cancel previous timer
-    if (saveTimer.current) {
-      clearTimeout(saveTimer.current);
-      saveTimer.current = null;
+    setName(exercise.name || "");
+    setNotes(exercise.notes || "");
+    if (exercise.setRows && exercise.setRows.length) {
+      setSetRows(
+        exercise.setRows.map((r) => ({
+          reps: r.reps != null ? String(r.reps) : "",
+          weight: r.weight != null ? String(r.weight) : "",
+        }))
+      );
     }
-    if (isSelectMode) return; // don't save while selecting
+    lastSnapshotRef.current = null; // force re-eval
+  }, [exercise.id]);
 
-    const parsed = {
-      id: exercise.id,
-      name,
-      sets: sets ? parseInt(sets, 10) : null,
-      reps: reps ? parseInt(reps, 10) : null,
-      weight: weight ? parseFloat(weight) : null,
+  const vol = setRows.reduce(
+    (sum, r) => sum + (Number(r.reps) || 0) * (Number(r.weight) || 0),
+    0
+  );
+
+  // Deep compare current form values with original exercise + last saved snapshot
+  React.useEffect(() => {
+    if (isSelectMode) return; // no saving while selecting
+    const currentSnapshot = JSON.stringify({
+      name: name.trim(),
       notes: notes || null,
-    };
+      rows: setRows.map((r) => [
+        r.reps === "" ? null : Number(r.reps),
+        r.weight === "" ? null : Number(r.weight),
+      ]),
+    });
+    if (lastSnapshotRef.current === currentSnapshot) return; // nothing changed since last scheduled save
 
-    // Skip if nothing changed compared to current props
-    const same =
-      (exercise.name || "") === parsed.name &&
-      (exercise.sets ?? null) === parsed.sets &&
-      (exercise.reps ?? null) === parsed.reps &&
-      (exercise.weight ?? null) === parsed.weight &&
-      (exercise.notes ?? null) === parsed.notes;
-    if (same) return;
-
+    // Compare with exercise prop (initial) to avoid immediate save if unchanged
+    const propRows = (
+      exercise.setRows && exercise.setRows.length
+        ? exercise.setRows
+        : exercise.sets
+        ? Array.from({ length: exercise.sets }, () => ({
+            reps: exercise.reps,
+            weight: exercise.weight,
+          }))
+        : []
+    ).map((r) => [
+      r.reps == null ? null : Number(r.reps),
+      r.weight == null ? null : Number(r.weight),
+    ]);
+    const curRows = setRows.map((r) => [
+      r.reps === "" ? null : Number(r.reps),
+      r.weight === "" ? null : Number(r.weight),
+    ]);
+    const equalRows =
+      propRows.length === curRows.length &&
+      propRows.every(
+        (r, i) => r[0] === curRows[i][0] && r[1] === curRows[i][1]
+      );
+    const unchanged =
+      (exercise.name || "").trim() === name.trim() &&
+      (exercise.notes || null) === (notes || null) &&
+      equalRows;
+    if (unchanged && lastSnapshotRef.current == null) {
+      // first run and nothing changed -> don't schedule save
+      lastSnapshotRef.current = currentSnapshot; // mark baseline to avoid re-evaluating
+      return;
+    }
+    if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      onSave(parsed);
+      lastSnapshotRef.current = currentSnapshot;
+      const cleaned = setRows.map((r) => ({
+        reps: r.reps === "" ? null : Number(r.reps),
+        weight: r.weight === "" ? null : Number(r.weight),
+      }));
+      onSave({ id: exercise.id, name, notes, setRows: cleaned });
     }, 700);
-
     return () => {
-      if (saveTimer.current) {
-        clearTimeout(saveTimer.current);
-        saveTimer.current = null;
-      }
+      if (saveTimer.current) clearTimeout(saveTimer.current);
     };
   }, [
     name,
-    sets,
-    reps,
-    weight,
     notes,
+    setRows,
     isSelectMode,
     exercise.id,
     exercise.name,
+    exercise.notes,
+    exercise.setRows,
     exercise.sets,
     exercise.reps,
     exercise.weight,
-    exercise.notes,
     onSave,
   ]);
+
+  const updateRow = (index, patch) => {
+    setSetRows((rows) => {
+      const next = rows.slice();
+      next[index] = { ...next[index], ...patch };
+      return next;
+    });
+  };
+
+  const addRow = () => {
+    setSetRows((rows) => [...rows, { reps: "", weight: "" }]);
+  };
+
+  const removeRow = (index) => {
+    setSetRows((rows) =>
+      rows.length === 1 ? rows : rows.filter((_, i) => i !== index)
+    );
+  };
 
   return (
     <View style={styles.card}>
@@ -121,40 +177,64 @@ const ExerciseCard = React.memo(function ExerciseCard({
             />
           </View>
         </View>
-        <View style={styles.row}>
-          <View style={styles.field}>
-            <Text style={styles.fieldLabel}>Sets</Text>
-            <TextInput
-              style={[styles.input, styles.num]}
-              placeholder="Sets"
-              keyboardType="number-pad"
-              placeholderTextColor="#999"
-              value={sets}
-              onChangeText={setSets}
-            />
+        <View style={{ gap: 6 }}>
+          <Text style={styles.fieldLabel}>Sets</Text>
+          <View style={styles.setsHeaderRow}>
+            <Text style={styles.setsHeaderIndex}></Text>
+            <Text style={styles.setsHeaderLabel}>Reps</Text>
+            <Text style={styles.setsHeaderLabel}>Weight</Text>
+            <Text style={styles.setsHeaderSpacer}></Text>
           </View>
-          <View style={styles.field}>
-            <Text style={styles.fieldLabel}>Reps</Text>
-            <TextInput
-              style={[styles.input, styles.num]}
-              placeholder="Reps"
-              keyboardType="number-pad"
-              placeholderTextColor="#999"
-              value={reps}
-              onChangeText={setReps}
-            />
-          </View>
-          <View style={styles.field}>
-            <Text style={styles.fieldLabel}>Weight</Text>
-            <TextInput
-              style={[styles.input, styles.num]}
-              placeholder="kg/lb"
-              keyboardType="decimal-pad"
-              placeholderTextColor="#999"
-              value={weight}
-              onChangeText={setWeight}
-            />
-          </View>
+          {setRows.map((row, idx) => (
+            <View key={idx} style={[styles.row, { alignItems: "center" }]}>
+              <Text style={{ width: 20, fontSize: 12, color: "#666" }}>
+                {idx + 1}
+              </Text>
+              <TextInput
+                style={[styles.input, styles.num, { flex: 1 }]}
+                placeholder="Reps"
+                keyboardType="number-pad"
+                placeholderTextColor="#999"
+                value={row.reps}
+                onChangeText={(v) => updateRow(idx, { reps: v })}
+              />
+              <TextInput
+                style={[styles.input, styles.num, { flex: 1 }]}
+                placeholder="Weight"
+                keyboardType="decimal-pad"
+                placeholderTextColor="#999"
+                value={row.weight}
+                onChangeText={(v) => updateRow(idx, { weight: v })}
+              />
+              <TouchableOpacity
+                onPress={() => removeRow(idx)}
+                style={{ padding: 6 }}
+                disabled={setRows.length === 1}
+              >
+                <Ionicons
+                  name={
+                    setRows.length === 1
+                      ? "remove-circle-outline"
+                      : "remove-circle"
+                  }
+                  size={20}
+                  color={setRows.length === 1 ? "#ccc" : "#d11a2a"}
+                />
+              </TouchableOpacity>
+            </View>
+          ))}
+          <TouchableOpacity
+            onPress={addRow}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 6,
+              marginTop: 4,
+            }}
+          >
+            <Ionicons name="add-circle-outline" size={20} color="#0a84ff" />
+            <Text style={{ color: "#0a84ff", fontWeight: "600" }}>Add Set</Text>
+          </TouchableOpacity>
         </View>
         <View style={styles.field}>
           <Text style={styles.fieldLabel}>Notes</Text>
@@ -210,15 +290,40 @@ export default function DayViewScreen({ route, navigation }) {
     [exercises]
   );
 
-  const load = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      const data = await getExercises(templateId, week, day);
-      setExercises(data);
-    } finally {
-      setRefreshing(false);
-    }
-  }, [templateId, week, day]);
+  const load = useCallback(
+    async (opts = { showSpinner: false }) => {
+      if (opts.showSpinner) setRefreshing(true);
+      try {
+        const data = await getExercises(templateId, week, day);
+        // Only update list if ids / order changed (prevents re-mount + shift)
+        const idsPrev = exercises.map((e) => e.id);
+        const idsNext = data.map((e) => e.id);
+        let changed = false;
+        if (idsPrev.length !== idsNext.length) changed = true;
+        else {
+          for (let i = 0; i < idsPrev.length; i++) {
+            if (idsPrev[i] !== idsNext[i]) {
+              changed = true;
+              break;
+            }
+          }
+        }
+        if (changed) {
+          // Preserve object references for unchanged items to keep Swipeable stable
+          const prevMap = new Map(exercises.map((e) => [e.id, e]));
+          const merged = data.map((d) => {
+            const old = prevMap.get(d.id);
+            if (!old) return d; // newly added
+            return old; // keep old reference; internal card manages its own state
+          });
+          setExercises(merged);
+        }
+      } finally {
+        if (opts.showSpinner) setRefreshing(false);
+      }
+    },
+    [templateId, week, day, exercises]
+  );
 
   useEffect(() => {
     navigation.setOptions({
@@ -227,7 +332,7 @@ export default function DayViewScreen({ route, navigation }) {
   }, [navigation, templateName, week]);
 
   useEffect(() => {
-    const unsub = navigation.addListener("focus", load);
+    const unsub = navigation.addListener("focus", () => load());
     return unsub;
   }, [navigation, load]);
 
@@ -239,12 +344,9 @@ export default function DayViewScreen({ route, navigation }) {
     })();
   }, [day, load, templateId, week]);
 
-  const renderItem = ({ item }) => (
-    <Animated.View
-      layout={Layout.springify().damping(16).stiffness(140)}
-      entering={FadeIn.duration(140)}
-      exiting={SlideOutLeft.duration(220)}
-    >
+  // Track which exercise ids have already appeared to avoid re-animating
+  const renderItem = ({ item }) => {
+    return (
       <Swipeable
         renderRightActions={() => (
           <View style={styles.swipeDeleteWrap}>
@@ -293,8 +395,29 @@ export default function DayViewScreen({ route, navigation }) {
         <ExerciseCard
           exercise={item}
           onSave={async (payload) => {
-            await updateExercise(payload);
-            await load();
+            await updateExerciseWithSets(payload);
+            // Optimistic in-place update to prevent full list re-layout bounce
+            setExercises((prev) =>
+              prev.map((ex) =>
+                ex.id === payload.id
+                  ? {
+                      ...ex,
+                      name: payload.name,
+                      notes: payload.notes,
+                      setRows: (payload.setRows || []).map((r, idx) => ({
+                        setNumber: idx + 1,
+                        reps: r.reps,
+                        weight: r.weight,
+                      })),
+                      volume: (payload.setRows || []).reduce(
+                        (sum, r) =>
+                          sum + (Number(r.reps) || 0) * (Number(r.weight) || 0),
+                        0
+                      ),
+                    }
+                  : ex
+              )
+            );
           }}
           isSelectMode={selectMode}
           isSelected={selectedIds.has(item.id)}
@@ -308,8 +431,8 @@ export default function DayViewScreen({ route, navigation }) {
           }
         />
       </Swipeable>
-    </Animated.View>
-  );
+    );
+  };
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -462,8 +585,8 @@ export default function DayViewScreen({ route, navigation }) {
           data={exercises}
           keyExtractor={(i) => String(i.id)}
           refreshing={refreshing}
-          onRefresh={load}
-          extraData={{ ex: exercises, sel: selectMode, n: selectedIds.size }}
+          // Only user pull-to-refresh shows spinner; pass showSpinner true
+          onRefresh={() => load({ showSpinner: true })}
           keyboardShouldPersistTaps="always"
           keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "none"}
           removeClippedSubviews={false}
@@ -663,4 +786,23 @@ const styles = StyleSheet.create({
     backgroundColor: "#f5f9ff",
   },
   secondaryButtonText: { color: "#0a84ff", fontWeight: "600" },
+  // sets header
+  setsHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 0,
+    marginBottom: 2,
+    marginTop: 2,
+  },
+  setsHeaderIndex: { width: 20 },
+  setsHeaderLabel: {
+    flex: 1,
+    fontSize: 10,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    color: "#888",
+    paddingLeft: 4,
+  },
+  setsHeaderSpacer: { width: 32 },
 });

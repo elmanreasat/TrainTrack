@@ -107,6 +107,18 @@ export function initDb() {
               FOREIGN KEY(template_id) REFERENCES templates(id) ON DELETE CASCADE
             );`,
           },
+          {
+            name: "exercise_sets",
+            sql: `CREATE TABLE IF NOT EXISTS exercise_sets (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              exercise_id INTEGER NOT NULL,
+              set_number INTEGER NOT NULL,
+              reps INTEGER,
+              weight REAL,
+              FOREIGN KEY(exercise_id) REFERENCES exercises(id) ON DELETE CASCADE,
+              UNIQUE(exercise_id, set_number)
+            );`,
+          },
         ];
         for (const { name, sql } of tables) {
           try {
@@ -228,6 +240,22 @@ export function initDb() {
             warn("initDb: failed to add days.completed", e);
           }
         }
+
+        // exercise_sets table migration (ensure exists)
+        try {
+          await db.runAsync(`CREATE TABLE IF NOT EXISTS exercise_sets (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              exercise_id INTEGER NOT NULL,
+              set_number INTEGER NOT NULL,
+              reps INTEGER,
+              weight REAL,
+              FOREIGN KEY(exercise_id) REFERENCES exercises(id) ON DELETE CASCADE,
+              UNIQUE(exercise_id, set_number)
+            );`);
+          log("initDb: ensured exercise_sets (migration)");
+        } catch (e) {
+          warn("initDb: ensure exercise_sets failed", e);
+        }
       } catch (err) {
         warn("initDb: migration phase had errors", err);
       }
@@ -338,15 +366,61 @@ export async function listWeeks(templateId) {
 
 export async function getExercises(templateId, week, day) {
   await initDb();
-  const sql = `SELECT id, template_id, week, day, name, sets, reps, weight, notes,
-                      (COALESCE(sets,0) * COALESCE(reps,0) * COALESCE(weight,0)) AS volume
-                 FROM exercises
-                WHERE template_id = ? AND week = ? AND day = ?
-                ORDER BY id ASC;`;
+  const sql = `SELECT e.id, e.template_id, e.week, e.day, e.name, e.sets, e.reps, e.weight, e.notes,
+                      COALESCE((SELECT SUM(COALESCE(es.reps,0)*COALESCE(es.weight,0)) FROM exercise_sets es WHERE es.exercise_id = e.id),
+                               (COALESCE(e.sets,0) * COALESCE(e.reps,0) * COALESCE(e.weight,0))) AS volume
+                 FROM exercises e
+                WHERE e.template_id = ? AND e.week = ? AND e.day = ?
+                ORDER BY e.id ASC;`;
   log("getExercises: start", { templateId, week, day });
-  const rows = await queryAll(sql, [templateId, week, day]);
-  log("getExercises: rows", rows.length);
-  return rows;
+  const exercises = await queryAll(sql, [templateId, week, day]);
+  if (!exercises.length) return [];
+  // Fetch set rows for all exercises in one query
+  const ids = exercises.map((e) => e.id);
+  const placeholders = ids.map(() => "?").join(",");
+  let setRows = [];
+  try {
+    setRows = await queryAll(
+      `SELECT exercise_id, set_number, reps, weight FROM exercise_sets WHERE exercise_id IN (${placeholders}) ORDER BY exercise_id, set_number ASC;`,
+      ids
+    );
+  } catch (e) {
+    // table might not exist yet (very early), ignore
+    setRows = [];
+  }
+  const byExercise = new Map();
+  for (const r of setRows) {
+    if (!byExercise.has(r.exercise_id)) byExercise.set(r.exercise_id, []);
+    byExercise.get(r.exercise_id).push({
+      setNumber: r.set_number,
+      reps: r.reps,
+      weight: r.weight,
+    });
+  }
+  for (const ex of exercises) {
+    const rows = byExercise.get(ex.id) || [];
+    if (rows.length) {
+      ex.setRows = rows;
+      continue;
+    }
+    // Backfill synthetic rows from legacy aggregate columns if present
+    if ((ex.sets || 0) > 0 && (ex.reps || ex.weight)) {
+      const count = ex.sets || 0;
+      const syn = [];
+      for (let i = 1; i <= count; i++) {
+        syn.push({
+          setNumber: i,
+          reps: ex.reps ?? null,
+          weight: ex.weight ?? null,
+        });
+      }
+      ex.setRows = syn;
+    } else {
+      ex.setRows = [];
+    }
+  }
+  log("getExercises: rows", exercises.length);
+  return exercises;
 }
 
 export async function addExercise({
@@ -358,6 +432,7 @@ export async function addExercise({
   reps,
   weight,
   notes,
+  initialSetRows, // optional array [{reps, weight}] inserted as rows overriding aggregate
 }) {
   await initDb();
   log("addExercise: inserting", { templateId, week, day, name });
@@ -375,6 +450,26 @@ export async function addExercise({
     ]
   );
   log("addExercise: inserted", res?.lastInsertRowId);
+  const exerciseId = res?.lastInsertRowId;
+  if (exerciseId && Array.isArray(initialSetRows) && initialSetRows.length) {
+    const stmts = [];
+    initialSetRows.forEach((row, idx) => {
+      stmts.push([
+        "INSERT INTO exercise_sets (exercise_id, set_number, reps, weight) VALUES (?, ?, ?, ?);",
+        [
+          exerciseId,
+          idx + 1,
+          row.reps !== "" && row.reps != null ? Number(row.reps) : null,
+          row.weight !== "" && row.weight != null ? Number(row.weight) : null,
+        ],
+      ]);
+    });
+    try {
+      await execBatch(stmts);
+    } catch (e) {
+      warn("addExercise: failed to insert initial set rows", e);
+    }
+  }
   return res?.lastInsertRowId;
 }
 
@@ -484,6 +579,39 @@ export async function updateExercise({ id, name, sets, reps, weight, notes }) {
   return r?.changes ?? 0;
 }
 
+// New helper to update exercise along with its dynamic set rows
+export async function updateExerciseWithSets({ id, name, notes, setRows }) {
+  await initDb();
+  const db = await getDb();
+  const cleaned = Array.isArray(setRows)
+    ? setRows
+        .map((r, idx) => ({
+          setNumber: idx + 1,
+          reps: r.reps === "" || r.reps == null ? null : Number(r.reps),
+          weight: r.weight === "" || r.weight == null ? null : Number(r.weight),
+        }))
+        .filter((r) => r.reps != null || r.weight != null)
+    : [];
+  const aggSets = cleaned.length || null;
+  const aggReps = cleaned.length ? cleaned[0].reps ?? null : null;
+  const aggWeight = cleaned.length ? cleaned[0].weight ?? null : null;
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `UPDATE exercises SET name = ?, notes = ?, sets = ?, reps = ?, weight = ? WHERE id = ?;`,
+      [name?.trim() || null, notes ?? null, aggSets, aggReps, aggWeight, id]
+    );
+    await db.runAsync("DELETE FROM exercise_sets WHERE exercise_id = ?;", [id]);
+    for (const r of cleaned) {
+      await db.runAsync(
+        "INSERT INTO exercise_sets (exercise_id, set_number, reps, weight) VALUES (?, ?, ?, ?);",
+        [id, r.setNumber, r.reps, r.weight]
+      );
+    }
+  });
+  log("updateExerciseWithSets: updated", { id, rows: cleaned.length });
+  return cleaned.length;
+}
+
 // Danger: Reset DB by dropping all tables and re-initializing schema
 export function resetDb() {
   return (async () => {
@@ -568,17 +696,38 @@ export async function copyWeekExercises(
           [templateId, dw, d]
         );
       }
-      await db.runAsync(
-        "DELETE FROM exercises WHERE template_id = ? AND week = ?;",
+      // remove existing dest exercises
+      const existing = await db.getAllAsync(
+        "SELECT id FROM exercises WHERE template_id = ? AND week = ?;",
         [templateId, dw]
       );
-      await db.runAsync(
-        `INSERT INTO exercises (template_id, week, day, name, sets, reps, weight, notes)
-                   SELECT ?, ?, day, name, NULL, NULL, NULL, NULL
-                     FROM exercises
-                    WHERE template_id = ? AND week = ?;`,
-        [templateId, dw, templateId, sourceWeek]
+      for (const ex of existing) {
+        await db.runAsync("DELETE FROM exercises WHERE id = ?;", [ex.id]);
+      }
+      // fetch source exercises with sets
+      const srcExercises = await db.getAllAsync(
+        "SELECT id, day, name, notes FROM exercises WHERE template_id = ? AND week = ? ORDER BY id ASC;",
+        [templateId, sourceWeek]
       );
+      for (const se of srcExercises) {
+        const ins = await db.runAsync(
+          "INSERT INTO exercises (template_id, week, day, name, sets, reps, weight, notes) VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?);",
+          [templateId, dw, se.day, se.name, se.notes]
+        );
+        const newId = ins?.lastInsertRowId;
+        if (newId) {
+          const setRows = await db.getAllAsync(
+            "SELECT set_number, reps, weight FROM exercise_sets WHERE exercise_id = ? ORDER BY set_number ASC;",
+            [se.id]
+          );
+          for (const r of setRows) {
+            await db.runAsync(
+              "INSERT INTO exercise_sets (exercise_id, set_number, reps, weight) VALUES (?, ?, ?, ?);",
+              [newId, r.set_number, r.reps, r.weight]
+            );
+          }
+        }
+      }
     }
   });
   log("copyWeekExercises: done", { templateId, sourceWeek, destWeeks });
@@ -609,13 +758,53 @@ async function getTemplateDeep(templateId) {
       ORDER BY week ASC, day ASC, id ASC;`,
     [templateId]
   );
+  let exerciseSetRows = [];
+  try {
+    const ids = exercises.map((e, idx) => idx); // placeholder if needed
+    exerciseSetRows = await queryAll(
+      `SELECT e.week, e.day, e.name, es.exercise_id, es.set_number, es.reps, es.weight
+         FROM exercise_sets es
+         JOIN exercises e ON e.id = es.exercise_id
+        WHERE e.template_id = ?
+        ORDER BY e.week ASC, e.day ASC, e.id ASC, es.set_number ASC;`,
+      [templateId]
+    );
+  } catch (e) {
+    exerciseSetRows = [];
+  }
+  const byExerciseId = new Map();
+  for (const row of exerciseSetRows) {
+    if (!byExerciseId.has(row.exercise_id))
+      byExerciseId.set(row.exercise_id, []);
+    byExerciseId.get(row.exercise_id).push({
+      n: row.set_number,
+      reps: row.reps,
+      weight: row.weight,
+    });
+  }
+  // We cannot directly correlate without including exercise id in exported base row; adjust below.
+  // Re-query including id for mapping
+  const exercisesFull = await queryAll(
+    `SELECT id, week, day, name, sets, reps, weight, notes FROM exercises WHERE template_id = ? ORDER BY week ASC, day ASC, id ASC;`,
+    [templateId]
+  );
+  const exportExercises = exercisesFull.map((e) => ({
+    week: e.week,
+    day: e.day,
+    name: e.name,
+    sets: e.sets,
+    reps: e.reps,
+    weight: e.weight,
+    notes: e.notes,
+    setRows: byExerciseId.get(e.id) || [],
+  }));
   return {
     id: t.id,
     name: t.name,
     weeks: t.weeks,
     weeksTable: weeks,
     days,
-    exercises,
+    exercises: exportExercises,
   };
 }
 
@@ -746,7 +935,7 @@ export async function importTemplateObjectWithName(tpl, newName) {
         const wk = Number(ex?.week);
         const dy = Number(ex?.day);
         if (!Number.isFinite(wk) || !Number.isFinite(dy)) continue;
-        await db.runAsync(
+        const ins = await db.runAsync(
           "INSERT INTO exercises (template_id, week, day, name, sets, reps, weight, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
           [
             templateId,
@@ -759,6 +948,19 @@ export async function importTemplateObjectWithName(tpl, newName) {
             ex?.notes ?? null,
           ]
         );
+        const exId = ins?.lastInsertRowId;
+        if (exId && Array.isArray(ex?.setRows) && ex.setRows.length) {
+          for (let i = 0; i < ex.setRows.length; i++) {
+            const row = ex.setRows[i];
+            const sn = Number(row?.n || row?.setNumber || i + 1);
+            const reps = toNullableNumber(row?.reps);
+            const weight = toNullableNumber(row?.weight);
+            await db.runAsync(
+              "INSERT OR IGNORE INTO exercise_sets (exercise_id, set_number, reps, weight) VALUES (?, ?, ?, ?);",
+              [exId, sn, reps, weight]
+            );
+          }
+        }
       }
     }
 

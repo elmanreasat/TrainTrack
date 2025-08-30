@@ -17,6 +17,7 @@ export default function ExerciseFormScreen({ route, navigation }) {
   const { templateId, week, day } = route.params;
 
   const [name, setName] = useState("");
+  // aggregate legacy fields kept for quick entry but we'll create dynamic rows
   const [sets, setSets] = useState("");
   const [reps, setReps] = useState("");
   const [weight, setWeight] = useState("");
@@ -28,15 +29,28 @@ export default function ExerciseFormScreen({ route, navigation }) {
       return;
     }
     try {
+      const nSets = sets ? parseInt(sets, 10) : 0;
+      const defaultReps = reps ? parseInt(reps, 10) : null;
+      const defaultWeight = weight ? parseFloat(weight) : null;
+      let initialSetRows = [];
+      if (nSets > 0) {
+        initialSetRows = Array.from({ length: nSets }, () => ({
+          reps: defaultReps,
+          weight: defaultWeight,
+        }));
+      } else {
+        initialSetRows = [{ reps: defaultReps, weight: defaultWeight }];
+      }
       await addExercise({
         templateId,
         week,
         day,
         name,
-        sets: sets ? parseInt(sets, 10) : null,
-        reps: reps ? parseInt(reps, 10) : null,
-        weight: weight ? parseFloat(weight) : null,
+        sets: nSets || null,
+        reps: defaultReps,
+        weight: defaultWeight,
         notes: notes || null,
+        initialSetRows,
       });
       navigation.goBack();
     } catch (e) {
