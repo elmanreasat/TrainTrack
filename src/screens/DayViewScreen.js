@@ -163,6 +163,22 @@ const ExerciseCard = React.memo(function ExerciseCard({
 
   return (
     <View style={styles.card}>
+      {isSelectMode && (
+        <TouchableOpacity
+          onPress={onToggleSelect}
+          style={{ paddingRight: 6 }}
+          accessibilityRole="button"
+          accessibilityLabel={
+            isSelected ? "Deselect exercise" : "Select exercise"
+          }
+        >
+          <Ionicons
+            name={isSelected ? "checkbox-outline" : "square-outline"}
+            size={22}
+            color={isSelected ? "#0a84ff" : "#999"}
+          />
+        </TouchableOpacity>
+      )}
       <View style={{ flex: 1, gap: 6 }}>
         <Text style={styles.title}>Exercise</Text>
         <View style={styles.row}>
@@ -249,22 +265,6 @@ const ExerciseCard = React.memo(function ExerciseCard({
         </View>
         <Text style={styles.volume}>Total volume: {isNaN(vol) ? 0 : vol}</Text>
       </View>
-      {isSelectMode ? (
-        <View style={styles.cardActions}>
-          <TouchableOpacity
-            onPress={onToggleSelect}
-            style={[styles.iconButton]}
-            accessibilityRole="button"
-            accessibilityLabel={isSelected ? "Deselect" : "Select"}
-          >
-            <Ionicons
-              name={isSelected ? "checkbox-outline" : "square-outline"}
-              size={22}
-              color={isSelected ? "#0a84ff" : "#999"}
-            />
-          </TouchableOpacity>
-        </View>
-      ) : null}
     </View>
   );
 });
@@ -277,6 +277,8 @@ export default function DayViewScreen({ route, navigation }) {
   const [dayDone, setDayDone] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
+  const allSelected =
+    exercises.length > 0 && selectedIds.size === exercises.length;
   const totalVolume = useMemo(
     () =>
       exercises.reduce(
@@ -491,9 +493,9 @@ export default function DayViewScreen({ route, navigation }) {
           </TouchableOpacity>
         </View>
 
-        {/* selection toolbar */}
-        <View style={styles.rowButtons}>
-          {!selectMode ? (
+        {/* selection controls */}
+        {!selectMode ? (
+          <View style={styles.rowButtons}>
             <TouchableOpacity
               style={styles.secondaryButton}
               onPress={() => setSelectMode(true)}
@@ -505,80 +507,34 @@ export default function DayViewScreen({ route, navigation }) {
               />
               <Text style={styles.secondaryButtonText}>Select</Text>
             </TouchableOpacity>
-          ) : (
-            <>
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={() =>
-                  setSelectedIds(new Set(exercises.map((e) => e.id)))
-                }
-              >
-                <Ionicons name="checkbox-outline" size={18} color="#0a84ff" />
-                <Text style={styles.secondaryButtonText}>All</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={() => setSelectedIds(new Set())}
-              >
-                <Ionicons name="square-outline" size={18} color="#0a84ff" />
-                <Text style={styles.secondaryButtonText}>None</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={() => {
-                  const ids = Array.from(selectedIds);
-                  if (!ids.length) {
-                    Alert.alert("Nothing selected");
-                    return;
-                  }
-                  Alert.alert(
-                    "Delete Exercises",
-                    `Delete ${ids.length} item(s)? This cannot be undone.`,
-                    [
-                      { text: "Cancel", style: "cancel" },
-                      {
-                        text: "Delete",
-                        style: "destructive",
-                        onPress: async () => {
-                          try {
-                            await Haptics.impactAsync(
-                              Haptics.ImpactFeedbackStyle.Heavy
-                            );
-                          } catch {}
-                          for (const id of ids) {
-                            try {
-                              await deleteExercise(id);
-                            } catch {}
-                          }
-                          await load();
-                          setSelectMode(false);
-                          setSelectedIds(new Set());
-                        },
-                      },
-                    ]
-                  );
-                }}
-              >
-                <Ionicons name="trash-outline" size={18} color="#cc0000" />
-                <Text
-                  style={[styles.secondaryButtonText, { color: "#cc0000" }]}
-                >
-                  Delete Selected
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={() => {
-                  setSelectMode(false);
-                  setSelectedIds(new Set());
-                }}
-              >
-                <Ionicons name="close-outline" size={18} color="#0a84ff" />
-                <Text style={styles.secondaryButtonText}>Cancel</Text>
-              </TouchableOpacity>
-            </>
-          )}
-        </View>
+          </View>
+        ) : (
+          <View style={styles.selectionHeaderBar}>
+            <TouchableOpacity
+              onPress={() => {
+                if (allSelected) setSelectedIds(new Set());
+                else setSelectedIds(new Set(exercises.map((e) => e.id)));
+              }}
+              style={styles.selectionHeaderButton}
+            >
+              <Ionicons
+                name={allSelected ? "radio-button-on" : "radio-button-off"}
+                size={22}
+                color={allSelected ? "#0a84ff" : "#666"}
+              />
+              <Text style={styles.selectionHeaderText}>Select All</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => {
+                setSelectMode(false);
+                setSelectedIds(new Set());
+              }}
+              style={styles.selectionHeaderButtonRight}
+            >
+              <Text style={styles.selectionHeaderCancel}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         <FlatList
           style={{ marginTop: 8, flex: 1 }}
@@ -600,7 +556,62 @@ export default function DayViewScreen({ route, navigation }) {
               No exercises for this day.
             </Text>
           }
+          contentContainerStyle={selectMode ? { paddingBottom: 120 } : null}
         />
+
+        {selectMode && (
+          <View style={styles.selectionActionsBar}>
+            <Text style={styles.selCountText}>{selectedIds.size} selected</Text>
+            <TouchableOpacity
+              style={styles.selActionBtn}
+              onPress={() => {
+                const ids = Array.from(selectedIds);
+                if (!ids.length) return;
+                Alert.alert(
+                  "Delete",
+                  `Delete ${ids.length} exercise(s)? This cannot be undone.`,
+                  [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "Delete",
+                      style: "destructive",
+                      onPress: async () => {
+                        try {
+                          await Haptics.impactAsync(
+                            Haptics.ImpactFeedbackStyle.Heavy
+                          );
+                        } catch {}
+                        for (const id of ids) {
+                          try {
+                            await deleteExercise(id);
+                          } catch {}
+                        }
+                        await load();
+                        setSelectMode(false);
+                        setSelectedIds(new Set());
+                      },
+                    },
+                  ]
+                );
+              }}
+              disabled={!selectedIds.size}
+            >
+              <Ionicons
+                name="trash-outline"
+                size={22}
+                color={selectedIds.size ? "#d11a2a" : "#bbb"}
+              />
+              <Text
+                style={[
+                  styles.selActionLabel,
+                  { color: selectedIds.size ? "#d11a2a" : "#bbb" },
+                ]}
+              >
+                Delete
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         <TouchableOpacity
           onPress={() =>
@@ -805,4 +816,46 @@ const styles = StyleSheet.create({
     paddingLeft: 4,
   },
   setsHeaderSpacer: { width: 32 },
+  // selection paradigm additions
+  selectionHeaderBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 4,
+    marginBottom: 4,
+  },
+  selectionHeaderButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    padding: 4,
+  },
+  selectionHeaderButtonRight: { padding: 4 },
+  selectionHeaderText: { fontSize: 13, fontWeight: "600", color: "#0a84ff" },
+  selectionHeaderCancel: { fontSize: 13, fontWeight: "600", color: "#0a84ff" },
+  selectionActionsBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingBottom: 22,
+    paddingTop: 12,
+    backgroundColor: "#ffffffee",
+    borderTopWidth: 1,
+    borderColor: "#e5e5e5",
+    gap: 48,
+  },
+  selActionBtn: { alignItems: "center", gap: 4 },
+  selActionLabel: { fontSize: 12, fontWeight: "600" },
+  selCountText: {
+    position: "absolute",
+    left: 16,
+    top: 12,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#444",
+  },
 });

@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useCallback } from "react";
+// Clean rebuild of screen with file-app style selection UI
+import React, { useState, useEffect, useCallback } from "react";
 import {
   View,
   Text,
@@ -11,6 +12,9 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import * as FileSystem from "expo-file-system";
+import * as Sharing from "expo-sharing";
+import * as DocumentPicker from "expo-document-picker";
 import {
   createTemplate,
   getTemplates,
@@ -19,15 +23,15 @@ import {
   exportTemplatesJson,
   importTemplateObjectWithName,
 } from "../db/db";
-import * as FileSystem from "expo-file-system";
-import * as Sharing from "expo-sharing";
-import * as DocumentPicker from "expo-document-picker";
 
 export default function TemplateListScreen({ navigation }) {
   const [name, setName] = useState("");
   const [weeks, setWeeks] = useState("");
   const [templates, setTemplates] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [namePrompt, setNamePrompt] = useState({
     visible: false,
     defaultName: "",
@@ -39,132 +43,36 @@ export default function TemplateListScreen({ navigation }) {
     items: [],
     busy: false,
   });
-  const [selectMode, setSelectMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState(new Set());
   const [exportPrompt, setExportPrompt] = useState({
     visible: false,
     filename: "",
     json: "",
     busy: false,
   });
-  const [advancedOpen, setAdvancedOpen] = useState(false);
 
-  const toggleSelect = (id) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-  const selectAll = () => {
-    setSelectedIds(new Set(templates.map((t) => t.id)));
-  };
-  const selectNone = () => {
-    setSelectedIds(new Set());
-  };
-  const exitSelectMode = () => {
-    setSelectMode(false);
-    setSelectedIds(new Set());
-  };
-  const exportSelected = async () => {
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) {
-      Alert.alert("Nothing selected");
-      return;
-    }
-    try {
-      const payload = await exportTemplatesJson(ids);
-      const json = JSON.stringify(payload, null, 2);
-      const filename = `traintrack-export-${Date.now()}-selected-${
-        ids.length
-      }.json`;
-
-      const shareIt = async () => {
-        const uri = FileSystem.cacheDirectory + filename;
-        await FileSystem.writeAsStringAsync(uri, json, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-        if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(uri, { mimeType: "application/json" });
-        } else {
-          Alert.alert("Exported", `Saved to temporary file: ${uri}`);
-        }
-      };
-
-      if (Platform.OS === "android") {
-        setExportPrompt({ visible: true, filename, json, busy: false });
-      } else {
-        await shareIt();
-      }
-    } catch (e) {
-      Alert.alert("Export failed", e?.message || "Could not export");
-    }
-  };
-  const deleteSelected = () => {
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) {
-      Alert.alert("Nothing selected");
-      return;
-    }
-    Alert.alert(
-      "Delete Templates",
-      `Delete ${ids.length} template(s)? This cannot be undone.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            for (const id of ids) {
-              try {
-                await deleteTemplate(id);
-              } catch {}
-            }
-            await load();
-            exitSelectMode();
-          },
-        },
-      ]
-    );
-  };
+  const allSelected =
+    templates.length > 0 && selectedIds.size === templates.length;
 
   const load = useCallback(
     async (opts = { showSpinner: false }) => {
       if (opts.showSpinner) setRefreshing(true);
       try {
         const data = await getTemplates();
-        // Diff: only update list if ids/order or relevant fields changed
+        // diff by id/order to avoid re-layout bounce
         let changed = false;
         if (data.length !== templates.length) changed = true;
         if (!changed) {
           for (let i = 0; i < data.length; i++) {
-            const a = data[i];
-            const b = templates[i];
-            if (
-              !b ||
-              a.id !== b.id ||
-              a.name !== b.name ||
-              a.weeks !== b.weeks
-            ) {
+            if (data[i].id !== templates[i].id) {
               changed = true;
               break;
             }
           }
         }
         if (changed) {
-          // Preserve object references for unchanged rows to avoid re-mount bounce
           const prevMap = new Map(templates.map((t) => [t.id, t]));
-          const merged = data.map((d) => {
-            const old = prevMap.get(d.id);
-            if (!old) return d; // new template
-            if (old.name === d.name && old.weeks === d.weeks) return old; // reuse reference
-            return { ...old, name: d.name, weeks: d.weeks }; // minimally mutate
-          });
-          setTemplates(merged);
+          setTemplates(data.map((d) => prevMap.get(d.id) || d));
         }
-      } catch (e) {
-        console.warn(e);
       } finally {
         if (opts.showSpinner) setRefreshing(false);
       }
@@ -173,36 +81,147 @@ export default function TemplateListScreen({ navigation }) {
   );
 
   useEffect(() => {
-    const unsub = navigation.addListener("focus", () => load());
-    // Remove any headerRight reset; reset control is now in the footer card
-    navigation.setOptions({ headerRight: undefined, title: "Your Training" });
-    return unsub;
-  }, [navigation]);
+    load();
+  }, [load]);
 
   const onCreate = async () => {
     if (!name.trim()) {
-      Alert.alert("Name required", "Please enter a unique template name.");
+      Alert.alert("Name required");
       return;
     }
     const w = parseInt(weeks, 10);
-    if (Number.isNaN(w) || w <= 0) {
-      Alert.alert("Invalid weeks", "Enter a positive number of weeks.");
+    if (!w || w < 1) {
+      Alert.alert("Invalid weeks");
       return;
     }
     try {
-      await createTemplate(name, w);
+      await createTemplate(name.trim(), w);
       setName("");
       setWeeks("");
-      await load();
+      load();
     } catch (e) {
-      Alert.alert("Could not create", e?.message || "Name must be unique.");
+      Alert.alert("Create failed", e?.message || "");
     }
   };
 
-  // removed unused handlers: confirmDelete, onExportOne
+  const toggleSelect = (id) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  const exitSelectMode = () => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const exportSelected = async () => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) {
+      Alert.alert("Nothing selected");
+      return;
+    }
+    try {
+      const payload = await exportTemplatesJson(ids);
+      const json = JSON.stringify(payload, null, 2);
+      const filename = `templates_${ids.length}_${Date.now()}.json`;
+      if (Platform.OS === "android")
+        setExportPrompt({ visible: true, filename, json, busy: false });
+      else {
+        const tempUri = FileSystem.cacheDirectory + filename;
+        await FileSystem.writeAsStringAsync(tempUri, json, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        if (await Sharing.isAvailableAsync())
+          await Sharing.shareAsync(tempUri, { mimeType: "application/json" });
+        else Alert.alert("Exported", `Saved to temp: ${tempUri}`);
+      }
+    } catch (e) {
+      Alert.alert("Export failed", e?.message || "");
+    }
+  };
+
+  const deleteSelected = () => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) {
+      Alert.alert("Nothing selected");
+      return;
+    }
+    Alert.alert("Delete", `Delete ${ids.length} template(s)?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          for (const id of ids) {
+            try {
+              await deleteTemplate(id);
+            } catch {}
+          }
+          await load();
+          exitSelectMode();
+        },
+      },
+    ]);
+  };
+
+  const startImport = async () => {
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ["application/json", "text/json", "*/*"],
+      });
+      if (res.canceled) return;
+      const file = res.assets?.[0];
+      if (!file?.uri) return;
+      const content = await FileSystem.readAsStringAsync(file.uri, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+      const parsed = JSON.parse(content);
+      if (!parsed?.templates?.length) {
+        Alert.alert("No templates in file");
+        return;
+      }
+      if (parsed.templates.length === 1) {
+        const tpl = parsed.templates[0];
+        setNamePrompt({
+          visible: true,
+          defaultName: tpl.name || "Imported Template",
+          error: "",
+          onSubmit: async (nm) => {
+            try {
+              await importTemplateObjectWithName(tpl, nm);
+              setNamePrompt({
+                visible: false,
+                defaultName: "",
+                onSubmit: null,
+                error: "",
+              });
+              await load();
+              Alert.alert("Imported", nm);
+            } catch (err) {
+              setNamePrompt((s) => ({
+                ...s,
+                error: err?.message || "Name must be unique.",
+              }));
+            }
+          },
+        });
+      } else {
+        const items = parsed.templates.map((t) => ({
+          tpl: t,
+          name: t.name || "Imported Template",
+          selected: true,
+          error: "",
+        }));
+        setMultiImport({ visible: true, items, busy: false });
+      }
+    } catch (e) {
+      Alert.alert("Import failed", e?.message || "");
+    }
+  };
 
   const renderItem = ({ item }) => {
-    const isSelected = selectedIds.has(item.id);
+    const selected = selectedIds.has(item.id);
     return (
       <TouchableOpacity
         style={styles.card}
@@ -222,15 +241,18 @@ export default function TemplateListScreen({ navigation }) {
           }
         }}
       >
-        {selectMode ? (
-          <View style={{ marginRight: 8 }}>
+        {selectMode && (
+          <TouchableOpacity
+            onPress={() => toggleSelect(item.id)}
+            style={{ marginRight: 8 }}
+          >
             <Ionicons
-              name={isSelected ? "checkbox-outline" : "square-outline"}
+              name={selected ? "checkbox-outline" : "square-outline"}
               size={22}
-              color={isSelected ? "#0a84ff" : "#999"}
+              color={selected ? "#0a84ff" : "#999"}
             />
-          </View>
-        ) : null}
+          </TouchableOpacity>
+        )}
         <View style={{ flex: 1 }}>
           <Text style={styles.cardTitle}>{item.name}</Text>
           <Text style={styles.cardSubtitle}>{item.weeks} weeks</Text>
@@ -247,6 +269,7 @@ export default function TemplateListScreen({ navigation }) {
       style={styles.container}
       edges={["top", "bottom", "left", "right"]}
     >
+      {/* Create */}
       <View style={styles.createCard}>
         <Text style={styles.header}>Create Template</Text>
         <View style={styles.row}>
@@ -269,140 +292,49 @@ export default function TemplateListScreen({ navigation }) {
         </View>
       </View>
 
-      <Text style={styles.sectionTitle}>Templates</Text>
-      {/* top actions: selection + import */}
-      <View style={styles.rowButtons}>
-        {!selectMode ? (
-          <>
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={() => setSelectMode(true)}
-            >
-              <Ionicons
-                name="checkmark-done-outline"
-                size={18}
-                color="#0a84ff"
-              />
-              <Text style={styles.secondaryButtonText}>Select</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={async () => {
-                try {
-                  const res = await DocumentPicker.getDocumentAsync({
-                    type: ["application/json", "text/json", "*/*"],
-                  });
-                  if (res.canceled) return;
-                  const file = res.assets?.[0];
-                  if (!file?.uri) return;
-                  const content = await FileSystem.readAsStringAsync(file.uri, {
-                    encoding: FileSystem.EncodingType.UTF8,
-                  });
-                  const parsed = JSON.parse(content);
-                  if (!parsed?.templates?.length) {
-                    Alert.alert("No templates in file");
-                    return;
-                  }
-                  const startImport = (tpl) => {
-                    setNamePrompt({
-                      visible: true,
-                      defaultName: tpl.name || "Imported Template",
-                      error: "",
-                      onSubmit: async (nm) => {
-                        try {
-                          const info = await importTemplateObjectWithName(
-                            tpl,
-                            nm
-                          );
-                          setNamePrompt({
-                            visible: false,
-                            defaultName: "",
-                            onSubmit: null,
-                            error: "",
-                          });
-                          await load();
-                          Alert.alert(
-                            "Imported",
-                            `Created template \"${info.name}\".`
-                          );
-                        } catch (err) {
-                          const msg =
-                            err && err.message
-                              ? String(err.message)
-                              : "Template name must be unique.";
-                          setNamePrompt((s) => ({ ...s, error: msg }));
-                        }
-                      },
-                    });
-                  };
-                  if (parsed.templates.length === 1) {
-                    startImport(parsed.templates[0]);
-                  } else {
-                    const items = parsed.templates.map((t) => ({
-                      tpl: t,
-                      name: t.name || "Imported Template",
-                      selected: true,
-                      error: "",
-                    }));
-                    setMultiImport({ visible: true, items, busy: false });
-                  }
-                } catch (e) {
-                  Alert.alert("Import failed", e?.message || "Invalid file");
-                }
-              }}
-            >
-              {/* swapped icon for Import to look like download */}
-              <Ionicons
-                name="cloud-download-outline"
-                size={18}
-                color="#0a84ff"
-              />
-              <Text style={styles.secondaryButtonText}>Import</Text>
-            </TouchableOpacity>
-          </>
-        ) : (
-          <>
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={selectAll}
-            >
-              <Ionicons name="checkbox-outline" size={18} color="#0a84ff" />
-              <Text style={styles.secondaryButtonText}>All</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={selectNone}
-            >
-              <Ionicons name="square-outline" size={18} color="#0a84ff" />
-              <Text style={styles.secondaryButtonText}>None</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={exportSelected}
-            >
-              {/* swapped icon for Export to look like upload */}
-              <Ionicons name="cloud-upload-outline" size={18} color="#0a84ff" />
-              <Text style={styles.secondaryButtonText}>Export Selected</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={deleteSelected}
-            >
-              <Ionicons name="trash-outline" size={18} color="#cc0000" />
-              <Text style={[styles.secondaryButtonText, { color: "#cc0000" }]}>
-                Delete Selected
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={exitSelectMode}
-            >
-              <Ionicons name="close-outline" size={18} color="#0a84ff" />
-              <Text style={styles.secondaryButtonText}>Cancel</Text>
-            </TouchableOpacity>
-          </>
-        )}
-      </View>
+      {/* Selection header or normal actions */}
+      {selectMode ? (
+        <View style={styles.selectionHeaderBar}>
+          <TouchableOpacity
+            onPress={() => {
+              if (allSelected) setSelectedIds(new Set());
+              else setSelectedIds(new Set(templates.map((t) => t.id)));
+            }}
+            style={styles.selectionHeaderButton}
+          >
+            <Ionicons
+              name={allSelected ? "radio-button-on" : "radio-button-off"}
+              size={22}
+              color={allSelected ? "#0a84ff" : "#666"}
+            />
+            <Text style={styles.selectionHeaderText}>Select All</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={exitSelectMode}
+            style={styles.selectionHeaderButtonRight}
+          >
+            <Text style={styles.selectionHeaderCancel}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <View style={styles.rowButtons}>
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={() => setSelectMode(true)}
+          >
+            <Ionicons name="checkmark-done-outline" size={18} color="#0a84ff" />
+            <Text style={styles.secondaryButtonText}>Select</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={startImport}
+          >
+            <Ionicons name="cloud-download-outline" size={18} color="#0a84ff" />
+            <Text style={styles.secondaryButtonText}>Import</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <FlatList
         data={templates}
         keyExtractor={(i) => String(i.id)}
@@ -412,11 +344,12 @@ export default function TemplateListScreen({ navigation }) {
         ListEmptyComponent={
           <Text style={styles.emptyText}>No templates yet.</Text>
         }
-        contentContainerStyle={{ paddingBottom: 24 }}
+        contentContainerStyle={{ paddingBottom: selectMode ? 140 : 24 }}
+        style={{ flex: 1 }}
       />
 
+      {/* Advanced */}
       <View style={styles.footer}>
-        {/* Advanced (collapsed) to hide reset from main UI */}
         <TouchableOpacity
           style={{
             flexDirection: "row",
@@ -440,21 +373,17 @@ export default function TemplateListScreen({ navigation }) {
             style={styles.resetCard}
             activeOpacity={0.85}
             onPress={() =>
-              Alert.alert(
-                "Reset Database",
-                "This will delete ALL templates, weeks, days, and exercises.",
-                [
-                  { text: "Cancel", style: "cancel" },
-                  {
-                    text: "Reset",
-                    style: "destructive",
-                    onPress: async () => {
-                      await resetDb();
-                      await load();
-                    },
+              Alert.alert("Reset Database", "Delete ALL data?", [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Reset",
+                  style: "destructive",
+                  onPress: async () => {
+                    await resetDb();
+                    await load();
                   },
-                ]
-              )
+                },
+              ])
             }
           >
             <View style={styles.resetIconWrap}>
@@ -463,7 +392,7 @@ export default function TemplateListScreen({ navigation }) {
             <View style={{ flex: 1 }}>
               <Text style={styles.resetTitle}>Reset Database</Text>
               <Text style={styles.resetSubtitle}>
-                Clears all data and recreates the schema.
+                Clears all data and recreates schema.
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color="#6b6b6b" />
@@ -471,39 +400,305 @@ export default function TemplateListScreen({ navigation }) {
         )}
       </View>
 
-      {/* name prompt modal */}
+      {/* Modals */}
       <NamePromptModal state={namePrompt} setState={setNamePrompt} />
-      {/* pick template modal removed */}
-      {/* multi import modal */}
       <TemplateMultiImportModal
         state={multiImport}
         setState={setMultiImport}
         existingNames={templates.map((t) => t.name)}
-        onDone={async (importedCount, failedCount) => {
+        onDone={async (ok, fail) => {
           setMultiImport({ visible: false, items: [], busy: false });
           await load();
           Alert.alert(
             "Import complete",
-            `Imported ${importedCount} template(s)` +
-              (failedCount ? `, ${failedCount} failed` : "")
+            `Imported ${ok}${fail ? `, ${fail} failed` : ``}`
           );
         }}
       />
-      {/* export destination modal (Android) */}
       <ExportDestinationModal state={exportPrompt} setState={setExportPrompt} />
+
+      {selectMode && (
+        <View style={styles.selectionActionsBar}>
+          <Text style={styles.selCountText}>{selectedIds.size} selected</Text>
+          <TouchableOpacity
+            style={styles.selActionBtn}
+            onPress={exportSelected}
+            disabled={!selectedIds.size}
+          >
+            <Ionicons
+              name="cloud-upload-outline"
+              size={22}
+              color={selectedIds.size ? "#0a84ff" : "#bbb"}
+            />
+            <Text
+              style={[
+                styles.selActionLabel,
+                { color: selectedIds.size ? "#0a84ff" : "#bbb" },
+              ]}
+            >
+              Export
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.selActionBtn}
+            onPress={deleteSelected}
+            disabled={!selectedIds.size}
+          >
+            <Ionicons
+              name="trash-outline"
+              size={22}
+              color={selectedIds.size ? "#d11a2a" : "#bbb"}
+            />
+            <Text
+              style={[
+                styles.selActionLabel,
+                { color: selectedIds.size ? "#d11a2a" : "#bbb" },
+              ]}
+            >
+              Delete
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
 
+// ---------- Modals ----------
+function NamePromptModal({ state, setState }) {
+  if (!state.visible) return null;
+  return (
+    <View style={modalStyles.backdrop} pointerEvents="box-none">
+      <View style={modalStyles.card}>
+        <Text style={{ fontWeight: "700", marginBottom: 8 }}>
+          Choose a unique name
+        </Text>
+        <TextInput
+          value={state.defaultName}
+          onChangeText={(v) =>
+            setState((s) => ({ ...s, defaultName: v, error: "" }))
+          }
+          placeholder="Template name"
+          style={modalStyles.textInput}
+        />
+        {!!state.error && <Text style={modalStyles.error}>{state.error}</Text>}
+        <View style={modalStyles.actionsRow}>
+          <TouchableOpacity
+            onPress={() =>
+              setState({
+                visible: false,
+                defaultName: "",
+                onSubmit: null,
+                error: "",
+              })
+            }
+            style={modalStyles.actionBtn}
+          >
+            <Text>Cancel</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => state.onSubmit?.(state.defaultName)}
+            style={modalStyles.actionBtn}
+          >
+            <Text style={{ color: "#0a84ff", fontWeight: "700" }}>Import</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function TemplateMultiImportModal({ state, setState, existingNames, onDone }) {
+  if (!state.visible) return null;
+  const items = state.items || [];
+  const nameExists = (name, idx) => {
+    if (!name) return "Name required";
+    const inList = items.some(
+      (it, i) => i !== idx && it.selected && it.name.trim() === name.trim()
+    );
+    const inDb = existingNames?.includes(name.trim());
+    if (inList || inDb) return "Template name must be unique.";
+    return "";
+  };
+  const updateItem = (idx, patch) => {
+    const next = items.slice();
+    next[idx] = { ...next[idx], ...patch };
+    setState({ ...state, items: next });
+  };
+  const toggleSel = (idx) =>
+    updateItem(idx, { selected: !items[idx].selected, error: "" });
+  const setNm = (idx, nm) => updateItem(idx, { name: nm, error: "" });
+  const importAll = async () => {
+    if (state.busy) return;
+    let hasErr = false;
+    const next = items.map((it, idx) => {
+      if (!it.selected) return it;
+      const err = nameExists(it.name, idx);
+      if (err) hasErr = true;
+      return { ...it, error: err };
+    });
+    if (hasErr) {
+      setState({ ...state, items: next });
+      return;
+    }
+    setState({ ...state, busy: true });
+    let ok = 0,
+      fail = 0;
+    for (const it of items) {
+      if (!it.selected) continue;
+      try {
+        await importTemplateObjectWithName(it.tpl, it.name.trim());
+        ok++;
+      } catch {
+        fail++;
+      }
+    }
+    setState({ visible: false, items: [], busy: false });
+    onDone?.(ok, fail);
+  };
+  return (
+    <View style={modalStyles.backdrop} pointerEvents="box-none">
+      <View style={[modalStyles.card, { maxHeight: 520 }]}>
+        <View style={modalStyles.sheetHeader}>
+          <Text style={{ fontWeight: "700" }}>Import Templates</Text>
+          <Text style={modalStyles.sheetSub}>
+            Select and name templates to import
+          </Text>
+        </View>
+        <FlatList
+          data={items}
+          keyExtractor={(_, i) => String(i)}
+          style={{ maxHeight: 380 }}
+          renderItem={({ item, index }) => (
+            <View style={modalStyles.itemRow}>
+              <View
+                style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+              >
+                <TouchableOpacity
+                  onPress={() => toggleSel(index)}
+                  style={{ padding: 6 }}
+                >
+                  <Ionicons
+                    name={item.selected ? "checkbox-outline" : "square-outline"}
+                    size={20}
+                    color={item.selected ? "#0a84ff" : "#999"}
+                  />
+                </TouchableOpacity>
+                <Text style={{ flex: 1, fontWeight: "600" }} numberOfLines={1}>
+                  {item.tpl?.name || "Untitled Template"}
+                </Text>
+              </View>
+              <TextInput
+                value={item.name}
+                onChangeText={(v) => setNm(index, v)}
+                placeholder="New unique name"
+                style={[
+                  modalStyles.textInput,
+                  {
+                    marginTop: 8,
+                    borderColor: item.error ? "#cc0000" : "#ddd",
+                  },
+                ]}
+              />
+              {!!item.error && (
+                <Text style={modalStyles.error}>{item.error}</Text>
+              )}
+            </View>
+          )}
+        />
+        <View style={modalStyles.actionsRow}>
+          <TouchableOpacity
+            disabled={state.busy}
+            onPress={() => setState({ visible: false, items: [], busy: false })}
+            style={modalStyles.actionBtn}
+          >
+            <Text>Cancel</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            disabled={state.busy}
+            onPress={importAll}
+            style={modalStyles.actionBtn}
+          >
+            <Text
+              style={{
+                color: state.busy ? "#999" : "#0a84ff",
+                fontWeight: "700",
+              }}
+            >
+              {state.busy ? "Importing…" : "Import Selected"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function ExportDestinationModal({ state, setState }) {
+  if (!state.visible || Platform.OS !== "android") return null;
+  const { filename, json, busy } = state;
+  const close = () =>
+    setState({ visible: false, filename: "", json: "", busy: false });
+  const saveToFolder = async () => {
+    if (busy) return;
+    try {
+      setState((s) => ({ ...s, busy: true }));
+      const perm =
+        await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!perm.granted) {
+        close();
+        return;
+      }
+      const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
+        perm.directoryUri,
+        filename,
+        "application/json"
+      );
+      await FileSystem.writeAsStringAsync(fileUri, json, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+      Alert.alert("Saved", filename);
+      close();
+    } catch (e) {
+      Alert.alert("Save failed", e?.message || "");
+      setState((s) => ({ ...s, busy: false }));
+    }
+  };
+  return (
+    <View style={[modalStyles.backdrop, { justifyContent: "flex-end" }]}>
+      <View style={modalStyles.sheet}>
+        <View style={modalStyles.sheetHeader}>
+          <Text style={{ fontWeight: "700" }}>Export</Text>
+          <Text style={modalStyles.sheetSub} numberOfLines={1}>
+            {filename}
+          </Text>
+        </View>
+        <TouchableOpacity
+          disabled={busy}
+          onPress={saveToFolder}
+          style={modalStyles.sheetBtn}
+        >
+          <Ionicons name="folder-outline" size={20} color="#0a84ff" />
+          <Text style={{ color: busy ? "#999" : "#0a84ff", fontWeight: "700" }}>
+            Save to folder
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          disabled={busy}
+          onPress={close}
+          style={[modalStyles.sheetBtn, { justifyContent: "center" }]}
+        >
+          <Text style={{ fontWeight: "600" }}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+// Styles
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 16, backgroundColor: "#f7f7f7" },
   header: { fontSize: 16, fontWeight: "600", marginBottom: 8 },
-  sectionTitle: {
-    fontSize: 14,
-    fontWeight: "600",
-    marginVertical: 10,
-    color: "#555",
-  },
   row: { flexDirection: "row", gap: 8, alignItems: "center" },
   input: {
     flex: 1,
@@ -534,6 +729,7 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
     elevation: 2,
+    marginBottom: 12,
   },
   card: {
     flexDirection: "row",
@@ -553,26 +749,25 @@ const styles = StyleSheet.create({
   },
   cardTitle: { fontSize: 16, fontWeight: "700" },
   cardSubtitle: { color: "#777", marginTop: 4 },
-  emptyText: { textAlign: "center", marginTop: 16, color: "#666" },
-  footer: { marginTop: 8 },
+  emptyText: { textAlign: "center", marginTop: 24, color: "#666" },
+  footer: { marginTop: 4 },
   rowButtons: {
     flexDirection: "row",
     gap: 12,
     flexWrap: "wrap",
     alignItems: "flex-start",
-    marginBottom: 12,
+    marginBottom: 8,
   },
   secondaryButton: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingVertical: 10,
+    paddingVertical: 8,
     paddingHorizontal: 14,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "#dbe7ff",
     backgroundColor: "#f5f9ff",
-    marginBottom: 8,
   },
   secondaryButtonText: { color: "#0a84ff", fontWeight: "600" },
   resetCard: {
@@ -589,6 +784,7 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
     elevation: 2,
+    marginTop: 8,
   },
   resetIconWrap: {
     width: 28,
@@ -600,395 +796,96 @@ const styles = StyleSheet.create({
   },
   resetTitle: { fontWeight: "700" },
   resetSubtitle: { color: "#6b6b6b", marginTop: 2, fontSize: 12 },
+  selectionHeaderBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 4,
+    marginBottom: 8,
+  },
+  selectionHeaderButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    padding: 4,
+  },
+  selectionHeaderButtonRight: { padding: 4 },
+  selectionHeaderText: { fontSize: 13, fontWeight: "600", color: "#0a84ff" },
+  selectionHeaderCancel: { fontSize: 13, fontWeight: "600", color: "#0a84ff" },
+  selectionActionsBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-evenly",
+    paddingBottom: 20,
+    paddingTop: 12,
+    backgroundColor: "#ffffffee",
+    borderTopWidth: 1,
+    borderColor: "#e5e5e5",
+  },
+  selActionBtn: { alignItems: "center", gap: 4 },
+  selActionLabel: { fontSize: 12, fontWeight: "600" },
+  selCountText: {
+    position: "absolute",
+    left: 16,
+    top: 12,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#444",
+  },
 });
 
-// Simple inline name prompt modal
-// Using a lightweight approach to avoid extra dependencies
-function NamePromptModal({ state, setState }) {
-  if (!state.visible) return null;
-  return (
-    <View
-      style={{
-        position: "absolute",
-        left: 0,
-        right: 0,
-        top: 0,
-        bottom: 0,
-        backgroundColor: "rgba(0,0,0,0.3)",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 24,
-      }}
-      pointerEvents="box-none"
-    >
-      <View
-        style={{
-          backgroundColor: "#fff",
-          padding: 16,
-          borderRadius: 12,
-          width: "100%",
-        }}
-      >
-        <Text style={{ fontWeight: "700", marginBottom: 8 }}>
-          Choose a unique name
-        </Text>
-        <TextInput
-          value={state.defaultName}
-          onChangeText={(v) =>
-            setState((s) => ({ ...s, defaultName: v, error: "" }))
-          }
-          placeholder="Template name"
-          style={{
-            borderWidth: 1,
-            borderColor: "#ddd",
-            borderRadius: 8,
-            paddingHorizontal: 12,
-            paddingVertical: 10,
-          }}
-        />
-        {!!state.error && (
-          <Text style={{ color: "#cc0000", marginTop: 8 }}>{state.error}</Text>
-        )}
-        <View
-          style={{
-            flexDirection: "row",
-            gap: 8,
-            justifyContent: "flex-end",
-            marginTop: 12,
-          }}
-        >
-          <TouchableOpacity
-            onPress={() =>
-              setState({
-                visible: false,
-                defaultName: "",
-                onSubmit: null,
-                error: "",
-              })
-            }
-            style={{ paddingVertical: 10, paddingHorizontal: 12 }}
-          >
-            <Text>Cancel</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => state.onSubmit?.(state.defaultName)}
-            style={{ paddingVertical: 10, paddingHorizontal: 12 }}
-          >
-            <Text style={{ color: "#0a84ff", fontWeight: "700" }}>Import</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </View>
-  );
-}
-
-// TemplatePickModal removed (unused)
-
-// Modal to import multiple templates at once
-function TemplateMultiImportModal({ state, setState, existingNames, onDone }) {
-  if (!state.visible) return null;
-  const items = state.items || [];
-  const nameExists = (name, idx) => {
-    if (!name) return "Name required";
-    const inList = items.some(
-      (it, i) => i !== idx && it.selected && it.name.trim() === name.trim()
-    );
-    const inDb = existingNames?.includes(name.trim());
-    if (inList || inDb) return "Template name must be unique.";
-    return "";
-  };
-  const updateItem = (idx, patch) => {
-    const next = items.slice();
-    next[idx] = { ...next[idx], ...patch };
-    setState({ ...state, items: next });
-  };
-  const toggleSelect = (idx) =>
-    updateItem(idx, { selected: !items[idx].selected, error: "" });
-  const setName = (idx, name) => updateItem(idx, { name, error: "" });
-  const importAll = async () => {
-    if (state.busy) return;
-    // Validate names
-    let hasError = false;
-    const next = items.map((it, idx) => {
-      if (!it.selected) return it;
-      const err = nameExists(it.name, idx);
-      if (err) hasError = true;
-      return { ...it, error: err };
-    });
-    if (hasError) {
-      setState({ ...state, items: next });
-      return;
-    }
-    // Import
-    setState({ ...state, busy: true });
-    let ok = 0,
-      fail = 0;
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      if (!it.selected) continue;
-      try {
-        await importTemplateObjectWithName(it.tpl, it.name.trim());
-        ok += 1;
-      } catch (err) {
-        fail += 1;
-      }
-    }
-    setState({ visible: false, items: [], busy: false });
-    onDone?.(ok, fail);
-  };
-
-  return (
-    <View
-      style={{
-        position: "absolute",
-        left: 0,
-        right: 0,
-        top: 0,
-        bottom: 0,
-        backgroundColor: "rgba(0,0,0,0.3)",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 24,
-      }}
-      pointerEvents="box-none"
-    >
-      <View
-        style={{
-          backgroundColor: "#fff",
-          borderRadius: 12,
-          width: "100%",
-          maxHeight: 520,
-        }}
-      >
-        <View
-          style={{ padding: 16, borderBottomWidth: 1, borderColor: "#eee" }}
-        >
-          <Text style={{ fontWeight: "700" }}>Import Templates</Text>
-          <Text style={{ color: "#666", marginTop: 4, fontSize: 12 }}>
-            Select and name templates to import
-          </Text>
-        </View>
-        <FlatList
-          data={items}
-          keyExtractor={(_, idx) => String(idx)}
-          renderItem={({ item, index }) => (
-            <View
-              style={{
-                padding: 12,
-                borderBottomWidth: 1,
-                borderColor: "#f1f1f1",
-              }}
-            >
-              <View
-                style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
-              >
-                <TouchableOpacity
-                  onPress={() => toggleSelect(index)}
-                  style={{ padding: 6 }}
-                >
-                  <Ionicons
-                    name={item.selected ? "checkbox-outline" : "square-outline"}
-                    size={20}
-                    color={item.selected ? "#0a84ff" : "#999"}
-                  />
-                </TouchableOpacity>
-                <Text style={{ flex: 1, fontWeight: "600" }} numberOfLines={1}>
-                  {item.tpl?.name || "Untitled Template"}
-                </Text>
-              </View>
-              <TextInput
-                value={item.name}
-                onChangeText={(v) => setName(index, v)}
-                placeholder="New unique name"
-                style={{
-                  borderWidth: 1,
-                  borderColor: item.error ? "#cc0000" : "#ddd",
-                  borderRadius: 8,
-                  paddingHorizontal: 12,
-                  paddingVertical: 8,
-                  marginTop: 8,
-                }}
-              />
-              {!!item.error && (
-                <Text style={{ color: "#cc0000", marginTop: 6 }}>
-                  {item.error}
-                </Text>
-              )}
-            </View>
-          )}
-          style={{ maxHeight: 380 }}
-        />
-        <View
-          style={{
-            flexDirection: "row",
-            justifyContent: "flex-end",
-            padding: 12,
-            gap: 8,
-          }}
-        >
-          <TouchableOpacity
-            disabled={state.busy}
-            onPress={() => setState({ visible: false, items: [], busy: false })}
-            style={{ paddingVertical: 10, paddingHorizontal: 12 }}
-          >
-            <Text>Cancel</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={importAll}
-            disabled={state.busy}
-            style={{ paddingVertical: 10, paddingHorizontal: 12 }}
-          >
-            <Text
-              style={{
-                color: state.busy ? "#999" : "#0a84ff",
-                fontWeight: "700",
-              }}
-            >
-              {state.busy ? "Importing…" : "Import Selected"}
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </View>
-  );
-}
-
-// Bottom-sheet style modal for choosing export destination (Android)
-function ExportDestinationModal({ state, setState }) {
-  if (!state.visible) return null;
-  const { filename, json, busy } = state;
-  const close = () =>
-    setState({ visible: false, filename: "", json: "", busy: false });
-
-  const saveToFolder = async () => {
-    if (busy) return;
-    try {
-      setState((s) => ({ ...s, busy: true }));
-      const perm =
-        await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
-      if (!perm.granted) {
-        // If not granted, fall back to share action
-        await shareNow();
-        return;
-      }
-      const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
-        perm.directoryUri,
-        filename,
-        "application/json"
-      );
-      await FileSystem.writeAsStringAsync(fileUri, json, {
-        encoding: FileSystem.EncodingType.UTF8,
-      });
-      Alert.alert("Saved", `Saved as ${filename}`);
-      close();
-    } catch (err) {
-      Alert.alert("Save failed", err?.message || "Unable to save the file");
-      setState((s) => ({ ...s, busy: false }));
-    }
-  };
-
-  const shareNow = async () => {
-    if (busy) return;
-    try {
-      setState((s) => ({ ...s, busy: true }));
-      const tempUri = FileSystem.cacheDirectory + filename;
-      await FileSystem.writeAsStringAsync(tempUri, json, {
-        encoding: FileSystem.EncodingType.UTF8,
-      });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(tempUri, { mimeType: "application/json" });
-      } else {
-        Alert.alert("Exported", `Saved to temporary file: ${tempUri}`);
-      }
-      close();
-    } catch (err) {
-      Alert.alert("Share failed", err?.message || "Unable to share the file");
-      setState((s) => ({ ...s, busy: false }));
-    }
-  };
-
-  return (
-    <View
-      style={{
-        position: "absolute",
-        left: 0,
-        right: 0,
-        top: 0,
-        bottom: 0,
-        backgroundColor: "rgba(0,0,0,0.3)",
-        justifyContent: "flex-end",
-      }}
-      pointerEvents="box-none"
-    >
-      <View
-        style={{
-          backgroundColor: "#fff",
-          borderTopLeftRadius: 16,
-          borderTopRightRadius: 16,
-          paddingBottom: 12,
-        }}
-      >
-        <View
-          style={{ padding: 16, borderBottomWidth: 1, borderColor: "#eee" }}
-        >
-          <Text style={{ fontWeight: "700" }}>Export</Text>
-          <Text
-            style={{ color: "#666", marginTop: 4, fontSize: 12 }}
-            numberOfLines={1}
-          >
-            {filename}
-          </Text>
-        </View>
-        <TouchableOpacity
-          disabled={busy}
-          onPress={saveToFolder}
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 10,
-            paddingHorizontal: 16,
-            paddingVertical: 14,
-          }}
-        >
-          <Ionicons name="folder-outline" size={20} color="#0a84ff" />
-          <Text style={{ color: busy ? "#999" : "#0a84ff", fontWeight: "700" }}>
-            Save to folder
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          disabled={busy}
-          onPress={shareNow}
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 10,
-            paddingHorizontal: 16,
-            paddingVertical: 14,
-          }}
-        >
-          <Ionicons name="share-social-outline" size={20} color="#0a84ff" />
-          <Text style={{ color: busy ? "#999" : "#0a84ff", fontWeight: "700" }}>
-            Share…
-          </Text>
-        </TouchableOpacity>
-        <View style={{ height: 8 }} />
-        <TouchableOpacity
-          disabled={busy}
-          onPress={close}
-          style={{
-            alignItems: "center",
-            justifyContent: "center",
-            paddingVertical: 14,
-            marginHorizontal: 12,
-            borderRadius: 12,
-            borderWidth: 1,
-            borderColor: "#eee",
-            backgroundColor: "#fafafa",
-          }}
-        >
-          <Text style={{ color: "#333", fontWeight: "600" }}>Cancel</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-}
+const modalStyles = StyleSheet.create({
+  backdrop: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.3)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+  card: {
+    backgroundColor: "#fff",
+    padding: 16,
+    borderRadius: 12,
+    width: "100%",
+  },
+  textInput: {
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  actionsRow: {
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "flex-end",
+    marginTop: 12,
+  },
+  actionBtn: { paddingVertical: 10, paddingHorizontal: 12 },
+  error: { color: "#cc0000", marginTop: 8 },
+  sheet: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingBottom: 12,
+    width: "100%",
+  },
+  sheetHeader: { padding: 16, borderBottomWidth: 1, borderColor: "#eee" },
+  sheetSub: { color: "#666", marginTop: 4, fontSize: 12 },
+  sheetBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  itemRow: { padding: 12, borderBottomWidth: 1, borderColor: "#f1f1f1" },
+});
